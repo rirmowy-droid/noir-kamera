@@ -256,6 +256,7 @@ class LookParams {
     @Volatile var manualAdvance = false     // film trzeba naciągnąć po każdym zdjęciu
     @Volatile var multiExposure = false     // spust bez naciągu = kolejna ekspozycja na tej samej klatce
     @Volatile var filmBorder = false        // odbitka z ramką negatywu
+    @Volatile var flashType = 0             // indeks w Flashes.all (0 = bez lampy)
 
     // fizyka naświetlania (ustawiane przez aparat)
     @Volatile var reciprocityStops = 0f     // utrata czułości przy długich czasach (≤ 0)

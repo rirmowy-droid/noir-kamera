@@ -15,6 +15,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.util.Range
 import android.util.Size
@@ -98,6 +99,29 @@ class MainActivity : AppCompatActivity() {
 
     private class MaskData(val buf: ByteBuffer?, val w: Int, val h: Int)
 
+    // ---- flesz
+    private lateinit var flashLabel: TextView
+    @Volatile private var latestSmall: FloatArray? = null
+    @Volatile private var smallW = 0
+    @Volatile private var smallH = 0
+    private var flashLock = false
+    private var flashReadyAt = 0L
+    private var cubeShots = 0
+
+    /** Dane zebrane w chwili błysku; mapa liczy się już na wątku wywoływania. */
+    private class FlashPrep(
+        val type: FlashType, val a: FloatArray?, val b: FloatArray?, val sw: Int, val sh: Int,
+        val synthetic: Boolean, val color: FloatArray, val power: Float
+    ) {
+        fun toRender(rot: Int): FlashRender {
+            val map = if (!synthetic && a != null && b != null) FlashMap.compute(a, b, sw, sh, rot) else null
+            return FlashRender(
+                map, FlashMap.width(sw, sh, rot), FlashMap.height(sw, sh, rot),
+                synthetic || map == null, type, color, power
+            )
+        }
+    }
+
     private val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val ioExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
@@ -163,6 +187,12 @@ class MainActivity : AppCompatActivity() {
         btnTake = findViewById(R.id.btnTake)
         flashView = findViewById(R.id.flash)
         btnAdvance = findViewById(R.id.btnAdvance)
+        flashLabel = findViewById(R.id.flashLabel)
+        flashLabel.setOnClickListener {
+            params.flashType = (params.flashType + 1) % Flashes.all.size
+            onFlashChanged()
+        }
+        flashLabel.setOnLongClickListener { pickFlash(); true }
         roll = Roll(this)
         sound = ShutterSound()
 
@@ -316,6 +346,11 @@ class MainActivity : AppCompatActivity() {
                 CaptureRequest.CONTROL_AWB_MODE,
                 if (s.tungsten) CaptureRequest.CONTROL_AWB_MODE_INCANDESCENT else CaptureRequest.CONTROL_AWB_MODE_DAYLIGHT
             )
+            custom = true
+        }
+        if (!manual && flashLock) {
+            // automat nie może "uciec" z ekspozycją, kiedy zapala się lampa – porównujemy kadry
+            opts.setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK, true)
             custom = true
         }
         if (custom) c2.setCaptureRequestOptions(opts.build()) else c2.clearCaptureRequestOptions()
@@ -493,6 +528,7 @@ class MainActivity : AppCompatActivity() {
         params.stock = s
         isoValue = s.iso
         updateStockLabel()
+        if (this::flashLabel.isInitialized) updateFlashLabel()
         applyExposure()
     }
 
@@ -689,6 +725,7 @@ class MainActivity : AppCompatActivity() {
             val rot = image.imageInfo.rotationDegrees
 
             meterEv = measure(dst, w, h)
+            updateSmall(dst, w, h)
             val bulbNow = bulbActive
             if (bulbNow) accumulateBulb(dst, w, h, rot)
 
@@ -715,6 +752,26 @@ class MainActivity : AppCompatActivity() {
         } finally {
             image.close()
         }
+    }
+
+    /** Mała mapa jasności (1/8 rozdzielczości) – do porównania kadru z błyskiem i bez. */
+    private fun updateSmall(buf: ByteBuffer, w: Int, h: Int) {
+        val sw = w / 8
+        val sh = h / 8
+        if (sw <= 0 || sh <= 0) return
+        val arr = FloatArray(sw * sh)
+        for (y in 0 until sh) {
+            val row = (y * 8 + 4) * w
+            for (x in 0 until sw) {
+                val i = (row + x * 8 + 4) * 4
+                arr[y * sw + x] = 0.2126f * linLut[buf.get(i).toInt() and 0xFF] +
+                    0.7152f * linLut[buf.get(i + 1).toInt() and 0xFF] +
+                    0.0722f * linLut[buf.get(i + 2).toInt() and 0xFF]
+            }
+        }
+        smallW = sw
+        smallH = sh
+        latestSmall = arr
     }
 
     /** Światłomierz: średnia jasność (z przewagą środka) względem 18% szarości, w działkach przysłony. */
@@ -802,10 +859,24 @@ class MainActivity : AppCompatActivity() {
     private fun takePhoto() {
         val cap = imageCapture ?: return
         if (!btnTake.isEnabled || !canExpose()) return
+        val ft = Flashes.all[params.flashType]
+        if (ft.kind != FlashType.Kind.OFF) {
+            if (SystemClock.elapsedRealtime() < flashReadyAt) {
+                toast("Lampa niegotowa – ${ft.recycleText}")
+                return
+            }
+            btnTake.isEnabled = false
+            takeWithFlash(cap, ft)
+            return
+        }
         shutterSoundAndFeel()
         btnTake.isEnabled = false
         flashView.alpha = 0.7f
         flashView.animate().alpha(0f).setDuration(350).start()
+        capture(cap, null, null)
+    }
+
+    private fun capture(cap: ImageCapture, prep: FlashPrep?, onDone: (() -> Unit)?) {
         cap.takePicture(ioExecutor, object : ImageCapture.OnImageCapturedCallback() {
             override fun onCaptureSuccess(image: ImageProxy) {
                 val rot = image.imageInfo.rotationDegrees
@@ -818,11 +889,18 @@ class MainActivity : AppCompatActivity() {
                 } finally {
                     image.close()
                 }
-                developAndSave(bytes, rot)
+                if (onDone != null) runOnUiThread { onDone() }
+                val fr = try {
+                    prep?.toRender(rot)
+                } catch (e: Throwable) {
+                    null
+                }
+                developAndSave(bytes, rot, fr)
             }
 
             override fun onError(exception: ImageCaptureException) {
                 runOnUiThread {
+                    onDone?.invoke()
                     btnTake.isEnabled = true
                     toast("Błąd zdjęcia: ${exception.message}")
                 }
@@ -830,8 +908,104 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
+    /**
+     * Zdjęcie z lampą: najpierw kadr bez błysku, potem zapala się dioda telefonu (przy zablokowanej
+     * ekspozycji), kadr z błyskiem i zdjęcie. Różnica mówi, ile światła dała lampa w każdym miejscu –
+     * a wywołanie zamienia to światło na lampę z wybranej epoki.
+     */
+    private fun takeWithFlash(cap: ImageCapture, ft: FlashType) {
+        val cam = camera
+        if (cam == null) {
+            btnTake.isEnabled = true
+            return
+        }
+        val stock = params.stock
+        val color = ft.color(stock)
+        val power = ft.effectivePower(stock)
+        val a = latestSmall?.copyOf()
+        val sw = smallW
+        val sh = smallH
+        if (!cam.cameraInfo.hasFlashUnit() || a == null) {
+            shutterSoundAndFeel()
+            flashBurst()
+            capture(cap, FlashPrep(ft, null, null, sw, sh, true, color, power)) { afterFlashFired(ft) }
+            return
+        }
+        flashLock = true
+        applyExposure()
+        cam.cameraControl.enableTorch(true)
+        val wait = max(350L, 2 * currentExposureMs() + 150L)
+        mainHandler.postDelayed({
+            val b = latestSmall?.copyOf()
+            shutterSoundAndFeel()
+            flashBurst()
+            val synthetic = b == null || b.size != a.size
+            capture(cap, FlashPrep(ft, a, b, sw, sh, synthetic, color, power)) {
+                cam.cameraControl.enableTorch(false)
+                flashLock = false
+                applyExposure()
+                afterFlashFired(ft)
+            }
+        }, wait)
+    }
+
+    private fun flashBurst() {
+        flashView.alpha = 1f
+        flashView.animate().alpha(0f).setDuration(260).start()
+    }
+
+    private fun afterFlashFired(ft: FlashType) {
+        var recycle = ft.recycleMs
+        if (ft.kind == FlashType.Kind.CUBE) {
+            cubeShots++
+            if (cubeShots >= 4) {
+                cubeShots = 0
+                recycle = 4000L
+                toast("Kostka zużyta – zakładam nową")
+            }
+        }
+        flashReadyAt = SystemClock.elapsedRealtime() + recycle
+        updateFlashLabel()
+        mainHandler.postDelayed({ updateFlashLabel() }, recycle + 50L)
+    }
+
+    private fun onFlashChanged() {
+        cubeShots = 0
+        flashReadyAt = 0L
+        updateFlashLabel()
+        val ft = Flashes.all[params.flashType]
+        if (ft.kind != FlashType.Kind.OFF) toast(ft.note)
+    }
+
+    private fun pickFlash() {
+        val names = Flashes.all.map { if (it.kind == FlashType.Kind.OFF) "Bez lampy" else it.name }.toTypedArray()
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Lampa błyskowa")
+            .setSingleChoiceItems(names, params.flashType) { d, which ->
+                params.flashType = which
+                onFlashChanged()
+                d.dismiss()
+            }
+            .show()
+    }
+
+    private fun updateFlashLabel() {
+        val ft = Flashes.all[params.flashType]
+        if (ft.kind == FlashType.Kind.OFF) {
+            flashLabel.text = "⚡ Lampa: brak (dotknij, przytrzymaj = lista)"
+            return
+        }
+        val s = params.stock
+        val bulb = if (ft.kind == FlashType.Kind.BULB || ft.kind == FlashType.Kind.CUBE) {
+            if (s.color && !s.tungsten) " · niebieska" else " · przezroczysta 3800 K"
+        } else ""
+        val cube = if (ft.kind == FlashType.Kind.CUBE) " · ${4 - cubeShots}/4" else ""
+        val waiting = SystemClock.elapsedRealtime() < flashReadyAt
+        flashLabel.text = "⚡ ${ft.name}$bulb$cube · ${if (waiting) ft.recycleText else "gotowa"}"
+    }
+
     /** "Ciemnia": dekodowanie, maska AI, wywołanie na GPU w pełnej rozdzielczości i zapis do Galerii. */
-    private fun developAndSave(bytes: ByteArray, rot: Int) {
+    private fun developAndSave(bytes: ByteArray, rot: Int, flash: FlashRender? = null) {
         try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
@@ -844,7 +1018,7 @@ class MainActivity : AppCompatActivity() {
             }
             val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
                 ?: throw IllegalStateException("Nie można odczytać zdjęcia")
-            handleExposure(bmp, rot, 0f)
+            handleExposure(bmp, rot, 0f, flash = flash)
         } catch (e: Throwable) {
             runOnUiThread {
                 btnTake.isEnabled = true
@@ -857,7 +1031,10 @@ class MainActivity : AppCompatActivity() {
      * Światło trafiło na kliszę. Przy wielokrotnej ekspozycji dokładamy je do obrazu utajonego klatki,
      * w przeciwnym razie klatka od razu idzie do "wywołania".
      */
-    private fun handleExposure(bmp: Bitmap, rot: Int, inputGain: Float, afterDevelop: (() -> Unit)? = null) {
+    private fun handleExposure(
+        bmp: Bitmap, rot: Int, inputGain: Float,
+        afterDevelop: (() -> Unit)? = null, flash: FlashRender? = null
+    ) {
         val multi = params.manualAdvance && params.multiExposure && inputGain == 0f
         if (multi) {
             try {
@@ -888,7 +1065,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
         advanced = !params.manualAdvance
-        developBitmap(bmp, rot, inputGain, afterDevelop = afterDevelop)
+        developBitmap(bmp, rot, inputGain, afterDevelop = afterDevelop, flash = flash)
         runOnUiThread { updateStockLabel() }
     }
 
@@ -907,7 +1084,7 @@ class MainActivity : AppCompatActivity() {
     private fun developBitmap(
         bmp: Bitmap, rot: Int, inputGain: Float,
         preMask: MaskData? = null, needMask: Boolean = true,
-        afterDevelop: (() -> Unit)? = null
+        afterDevelop: (() -> Unit)? = null, flash: FlashRender? = null
     ) {
         try {
             val md = if (needMask) computeMask(bmp, rot) else preMask
@@ -916,7 +1093,7 @@ class MainActivity : AppCompatActivity() {
             val mb = md?.buf
             glView.queueEvent {
                 val out = try {
-                    renderer.renderStill(bmp, rot, mb, mw, mh, inputGain)
+                    renderer.renderStill(bmp, rot, mb, mw, mh, inputGain, flash)
                 } catch (e: Throwable) {
                     null
                 }

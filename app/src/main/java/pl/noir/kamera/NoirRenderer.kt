@@ -112,7 +112,9 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
             "uTime", "uAspect", "uTint", "uFlip", "uInputGain", "uDepthOn", "uFocus", "uAperture",
             "uSwirl", "uEdge", "uDiffusion", "uExpired", "uSeed", "uViewfinder",
             "uColorStock", "uCrosstalk", "uLayerContrast", "uLayerOffset", "uDyeMix", "uSaturation",
-            "uFadeLift", "uHighTint", "uHalation", "uHueSat", "uDyeFade"
+            "uFadeLift", "uHighTint", "uHalation", "uHueSat", "uDyeFade",
+            "uFlashMap", "uFlashOn", "uFlashSynthetic", "uFlashColor", "uFlashPower", "uAmbientKeep",
+            "uFlashFalloff", "uShadowOffset", "uShadowSoft"
         )
         uniforms.clear()
         for (n in names) uniforms[n] = GLES30.glGetUniformLocation(program, n)
@@ -214,7 +216,10 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
      * Wywołanie pełnej rozdzielczości zdjęcia tym samym "chemicznym" procesem co podgląd.
      * Musi być wywołane na wątku GL (glView.queueEvent).
      */
-    fun renderStill(bitmap: Bitmap, rotation: Int, mask: ByteBuffer?, mw: Int, mh: Int, inputGain: Float = 0f): Bitmap {
+    fun renderStill(
+        bitmap: Bitmap, rotation: Int, mask: ByteBuffer?, mw: Int, mh: Int,
+        inputGain: Float = 0f, flash: FlashRender? = null
+    ): Bitmap {
         val bw = bitmap.width
         val bh = bitmap.height
         val upW = if (rotation % 180 != 0) bh else bw
@@ -236,6 +241,16 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
             stillMask = tmpMask
         }
 
+        var flashTex = 0
+        val fm = flash?.map
+        if (flash != null && fm != null && flash.w > 0 && flash.h > 0) {
+            flashTex = createTexture(false)
+            fm.position(0)
+            GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 1)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, flashTex)
+            GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_R8, flash.w, flash.h, 0, GLES30.GL_RED, GLES30.GL_UNSIGNED_BYTE, fm)
+        }
+
         val outTex = createTexture(false)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, outTex)
         GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA8, upW, upH, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null)
@@ -250,13 +265,13 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
             if (status != GLES30.GL_FRAMEBUFFER_COMPLETE) throw IllegalStateException("FBO $status")
             GLES30.glViewport(0, 0, upW, upH)
             val seed = (System.nanoTime() % 100000L) / 37.0f
-            draw(src, upW, upH, rotation, 1f, 1f, true, seed, stillMask, inputGain, false)
+            draw(src, upW, upH, rotation, 1f, 1f, true, seed, stillMask, inputGain, false, flash, flashTex)
             GLES30.glPixelStorei(GLES30.GL_PACK_ALIGNMENT, 1)
             GLES30.glReadPixels(0, 0, upW, upH, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, out)
         } finally {
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
             GLES30.glDeleteFramebuffers(1, fbo, 0)
-            val del = if (tmpMask != 0) intArrayOf(src, outTex, tmpMask) else intArrayOf(src, outTex)
+            val del = listOf(src, outTex, tmpMask, flashTex).filter { it != 0 }.toIntArray()
             GLES30.glDeleteTextures(del.size, del, 0)
             GLES30.glViewport(0, 0, viewW, viewH)
         }
@@ -269,7 +284,8 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
 
     private fun draw(
         tex: Int, upW: Int, upH: Int, rotation: Int,
-        fitX: Float, fitY: Float, flip: Boolean, time: Float, mask: Int, inputGain: Float, viewfinder: Boolean
+        fitX: Float, fitY: Float, flip: Boolean, time: Float, mask: Int, inputGain: Float, viewfinder: Boolean,
+        flash: FlashRender? = null, flashTex: Int = 0
     ) {
         val s = params.stock
         GLES30.glUseProgram(program)
@@ -296,7 +312,7 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
         GLES30.glUniform1f(u("uToe"), s.toe)
         GLES30.glUniform1f(u("uGrain"), s.grain * params.grainMul)
         GLES30.glUniform1f(u("uGrainSize"), s.grainSize)
-        GLES30.glUniform1f(u("uGlow"), s.glow * params.glowMul)
+        GLES30.glUniform1f(u("uGlow"), s.glow * params.glowMul + (flash?.type?.glowAdd ?: 0f))
         GLES30.glUniform1f(u("uBloomLod"), bloomLod)
         GLES30.glUniform1f(u("uVignette"), (s.vignette * params.vignetteMul).coerceIn(0f, 1f))
         GLES30.glUniform1f(u("uMaskAmount"), if (params.aiEnabled && mask != whiteTex) params.aiAmount else 0f)
@@ -328,6 +344,25 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
         GLES30.glUniform3f(u("uHalation"), s.halation[0], s.halation[1], s.halation[2])
         GLES30.glUniform3f(u("uHueSat"), s.hueSat[0], s.hueSat[1], s.hueSat[2])
         GLES30.glUniform3f(u("uDyeFade"), s.dyeFade[0], s.dyeFade[1], s.dyeFade[2])
+
+        // flesz (tylko przy wywołaniu zdjęcia)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, if (flashTex != 0) flashTex else whiteTex)
+        GLES30.glUniform1i(u("uFlashMap"), 2)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        if (flash != null) {
+            val t = flash.type
+            GLES30.glUniform1f(u("uFlashOn"), 1f)
+            GLES30.glUniform1f(u("uFlashSynthetic"), if (flash.synthetic || flashTex == 0) 1f else 0f)
+            GLES30.glUniform3f(u("uFlashColor"), flash.color[0], flash.color[1], flash.color[2])
+            GLES30.glUniform1f(u("uFlashPower"), flash.power)
+            GLES30.glUniform1f(u("uAmbientKeep"), t.ambientKeep)
+            GLES30.glUniform1f(u("uFlashFalloff"), t.falloff)
+            GLES30.glUniform2f(u("uShadowOffset"), t.shadowX / (upW.toFloat() / upH), t.shadowY)
+            GLES30.glUniform1f(u("uShadowSoft"), t.shadowSoft)
+        } else {
+            GLES30.glUniform1f(u("uFlashOn"), 0f)
+        }
 
         quad.position(0)
         GLES30.glVertexAttribPointer(0, 2, GLES30.GL_FLOAT, false, 16, quad)

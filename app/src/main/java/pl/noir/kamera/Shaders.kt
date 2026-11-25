@@ -69,6 +69,16 @@ uniform vec3 uHalation;
 uniform vec3 uHueSat;
 uniform vec3 uDyeFade;
 
+uniform sampler2D uFlashMap;
+uniform float uFlashOn;
+uniform float uFlashSynthetic;
+uniform vec3 uFlashColor;
+uniform float uFlashPower;
+uniform float uAmbientKeep;
+uniform float uFlashFalloff;
+uniform vec2 uShadowOffset;
+uniform float uShadowSoft;
+
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
 
 vec2 toTex(vec2 uv) {
@@ -167,6 +177,33 @@ void main() {
         vec2 cell = floor(vc * 260.0);
         float sparkle = hash(cell) - 0.5;
         e *= 1.0 + sparkle * 1.6 * clamp(coc * 3.0, 0.0, 1.0);
+    }
+
+    // FLESZ: światło z lampy oddzielone od zastanego (porównanie kadru z błyskiem i bez),
+    // przerobione na lampę z epoki: inna barwa i siła, ostrzejszy spadek, twardy cień za postacią,
+    // a światło zastane prawie znika przez krótki czas synchronizacji
+    if (uFlashOn > 0.5) {
+        float F;
+        if (uFlashSynthetic > 0.5) {
+            vec2 dc = (uv - 0.5) * vec2(uAspect, 1.0);
+            F = clamp(subjectAt(uv) * 0.85 + 0.25 * (1.0 - length(dc) * 1.6), 0.0, 1.0);
+        } else {
+            F = texture(uFlashMap, uv).r;
+        }
+        F = pow(F, uFlashFalloff);
+        float shadow = 0.0;
+        if (uDepthOn > 0.5) {
+            vec2 so = uShadowOffset;
+            float caster = (subjectAt(uv - so)
+                + subjectAt(uv - so + vec2(uShadowSoft, 0.0))
+                + subjectAt(uv - so - vec2(uShadowSoft, 0.0))
+                + subjectAt(uv - so + vec2(0.0, uShadowSoft))
+                + subjectAt(uv - so - vec2(0.0, uShadowSoft))) * 0.2;
+            shadow = caster * (1.0 - subjectAt(uv));
+        }
+        vec3 flashLight = e * F * uFlashColor * uFlashPower * (1.0 - 0.9 * shadow);
+        vec3 ambient = e * (1.0 - F) * uAmbientKeep;
+        e = flashLight + ambient;
     }
 
     // efekt krawędziowy wywoływacza

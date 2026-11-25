@@ -27,6 +27,17 @@ Kolorowa klisza ma trzy warstwy (czułą na czerwień, zieleń i błękit), każ
 
 Kolorowe klisze mają **stały balans bieli**: dzienna pod żarówką daje pomarańczowe zdjęcia, a „T” w słońcu niebieskie, tak jak prawdziwa emulsja. Przytrzymaj nazwę kliszy, żeby wybrać ją z listy.
 
+### Lampy błyskowe z epoki
+
+Dioda telefonu naprawdę błyska, a aplikacja porównuje kadr z błyskiem i bez niego. Wie więc, ile światła dała lampa w każdym miejscu kadru, i przerabia je na lampę z wybranej epoki: z inną barwą i siłą, ostrzejszym spadkiem światła z odległością (tło zapada się w czerń), twardym cieniem za postacią i zgaszonym światłem zastanym.
+
+- **Proszek magnezjowy (do ok. 1930)**: ogromny, szeroki błysk z góry, miękkie cienie, dym.
+- **Żarówka błyskowa (1930–60)**: lampa prasowa na bocznym ramieniu. Przezroczysta (3800 K) do czarno-białej, niebieska do kolorowej.
+- **Flesz elektronowy (1955–75)**: zimny, krótki błysk, cień tuż pod postacią, ładowanie między zdjęciami.
+- **Kostka błyskowa (1965–75)**: 4 zdjęcia na kostkę, płaskie światło, szybki spadek.
+
+Dotknij napisu ⚡, żeby zmienić lampę, albo przytrzymaj, żeby wybrać ją z listy.
+
 ### Jak prawdziwy aparat
 
 - **Rolka** 12/24/36 klatek. Zdjęć nie widać, dopóki nie wywołasz całej rolki. Kliszy nie zmienisz w połowie rolki. Stan rolki przetrwa zamknięcie aplikacji.

@@ -44,6 +44,15 @@
             android:layout_height="wrap_content"
             android:textColor="#CCCCCC"
             android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/flashLabel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="6dp"
+            android:paddingBottom="2dp"
+            android:textColor="#FFE9B0"
+            android:textSize="13sp" />
     </LinearLayout>
 
     <ScrollView
