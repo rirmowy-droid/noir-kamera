@@ -79,6 +79,12 @@ class LookParams {
     @Volatile var focus = 0f                // 0 = ostrość na postaci, 1 = na tle
     @Volatile var swirl = false             // wirujące rozmycie (Helios)
 
+    // doświadczenie aparatu
+    @Volatile var viewfinder = true         // matówka z klinem ostrości w podglądzie
+    @Volatile var manualAdvance = true      // film trzeba naciągnąć po każdym zdjęciu
+    @Volatile var multiExposure = false     // spust bez naciągu = kolejna ekspozycja na tej samej klatce
+    @Volatile var filmBorder = false        // odbitka z ramką negatywu
+
     // fizyka naświetlania (ustawiane przez aparat)
     @Volatile var reciprocityStops = 0f     // utrata czułości przy długich czasach (≤ 0)
     @Volatile var reciprocityContrast = 1f

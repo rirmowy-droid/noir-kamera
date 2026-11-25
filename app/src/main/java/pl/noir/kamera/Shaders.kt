@@ -51,6 +51,7 @@ uniform float uDamage;
 uniform float uTime;
 uniform float uAspect;
 uniform vec3 uTint;
+uniform float uViewfinder;
 
 vec2 toTex(vec2 uv) {
     if (uRotation == 1) return vec2(uv.y, 1.0 - uv.x);
@@ -121,8 +122,27 @@ void main() {
     }
 
     float gain = exp2(uExposure + uInputGain);
+
+    // WIZJER: klin ostrości (obraz dzielony) w środku matówki – połówki schodzą się, gdy ostrość trafia
+    vec2 vc = (uv - 0.5) * vec2(uAspect, 1.0);
+    float vr = length(vc);
+    float splitR = 0.075;
+    float prismR = 0.125;
+    vec2 ouv = uv;
+    if (uViewfinder > 0.5 && vr < splitR) {
+        float centerDepth = uDepthOn > 0.5 ? 1.0 - subjectAt(vec2(0.5)) : uFocus;
+        float shift = (centerDepth - uFocus) * 0.05;
+        ouv.x += (vc.y < 0.0 ? shift : -shift) / uAspect;
+    }
     float coc;
-    float e = optical(uv, coc);
+    float e = optical(ouv, coc);
+
+    // pierścień mikropryzmatów: migocze, gdy obraz jest nieostry
+    if (uViewfinder > 0.5 && vr >= splitR && vr < prismR) {
+        vec2 cell = floor(vc * 260.0);
+        float sparkle = hash(cell) - 0.5;
+        e *= 1.0 + sparkle * 1.6 * clamp(coc * 3.0, 0.0, 1.0);
+    }
 
     // efekt krawędziowy wywoływacza: granice jasne/ciemne nabierają "ostrości" starej odbitki
     if (uEdge > 0.001) {
@@ -195,6 +215,17 @@ void main() {
             float spot = 1.0 - smoothstep(0.1, 0.3, length(fract(cellUv) - 0.5));
             y *= mix(1.0, 0.1, spot);
         }
+    }
+
+    // matówka wizjera: delikatna faktura szkła, ciemniejsze rogi, obwódki klina i pierścienia
+    if (uViewfinder > 0.5) {
+        float glass = hash(floor(uv * vec2(uAspect, 1.0) * 700.0));
+        y *= 0.95 + 0.07 * glass;
+        y *= 1.0 - 0.18 * smoothstep(0.5, 1.1, dist);
+        float ring1 = 1.0 - smoothstep(0.0, 0.0025, abs(vr - splitR));
+        float ring2 = 1.0 - smoothstep(0.0, 0.0025, abs(vr - prismR));
+        float splitLine = (vr < splitR) ? 1.0 - smoothstep(0.0, 0.0015, abs(vc.y)) : 0.0;
+        y = mix(y, y * 0.45, max(max(ring1, ring2), splitLine * 0.6));
     }
 
     fragColor = vec4(clamp(vec3(y) * uTint, 0.0, 1.0), 1.0);

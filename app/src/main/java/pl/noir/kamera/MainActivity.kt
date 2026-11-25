@@ -13,9 +13,12 @@ import android.hardware.camera2.CaptureRequest
 import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.util.Range
 import android.util.Size
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.OrientationEventListener
 import android.view.Surface
@@ -82,6 +85,18 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnShutterSpeed: Button
     private lateinit var btnTake: Button
     private lateinit var flashView: View
+    private lateinit var btnAdvance: Button
+    private lateinit var roll: Roll
+    private lateinit var sound: ShutterSound
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    // ---- naciąg filmu i wielokrotna ekspozycja
+    @Volatile private var advanced = true
+    private var latent: LatentFrame? = null          // tylko na ioExecutor
+    @Volatile private var latentExposures = 0
+    @Volatile private var developing = false
+
+    private class MaskData(val buf: ByteBuffer?, val w: Int, val h: Int)
 
     private val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val ioExecutor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -116,6 +131,7 @@ class MainActivity : AppCompatActivity() {
 
     // ---- tryb B (Bulb): sumowanie światła
     @Volatile private var bulbActive = false
+    private var bulbHeld = false
     private var bulbFinishRequested = false
     private var accum: FloatArray? = null
     private var bulbBytes: ByteArray? = null
@@ -146,6 +162,9 @@ class MainActivity : AppCompatActivity() {
         btnShutterSpeed = findViewById(R.id.btnShutterSpeed)
         btnTake = findViewById(R.id.btnTake)
         flashView = findViewById(R.id.flash)
+        btnAdvance = findViewById(R.id.btnAdvance)
+        roll = Roll(this)
+        sound = ShutterSound()
 
         renderer = NoirRenderer(params)
         glView.setEGLContextClientVersion(3)
@@ -160,8 +179,9 @@ class MainActivity : AppCompatActivity() {
             SelfieSegmenterOptions.Builder().setDetectorMode(SelfieSegmenterOptions.SINGLE_IMAGE_MODE).build()
         )
 
-        setStock(0)
-        stockName.setOnClickListener { setStock((stockIndex + 1) % FilmStocks.all.size) }
+        setStock(if (roll.count > 0) roll.stockIndex.coerceIn(0, FilmStocks.all.size - 1) else 0)
+        stockName.setOnClickListener { changeStockByUser() }
+        btnAdvance.setOnClickListener { advanceFilm() }
         btnMode.setOnClickListener { toggleMode() }
         btnIso.setOnClickListener { cycleIso() }
         btnShutterSpeed.setOnClickListener { cycleShutter(1) }
@@ -220,6 +240,7 @@ class MainActivity : AppCompatActivity() {
         ioExecutor.shutdown()
         streamSegmenter?.close()
         stillSegmenter?.close()
+        sound.release()
     }
 
     // ---------------------------------------------------------------- kamera
@@ -314,6 +335,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun startBulb() {
         if (bulbActive || !btnTake.isEnabled) return
+        if (!canExpose(bulb = true)) return
+        bulbHeld = true
+        sound.firstCurtain()
+        btnTake.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
         analysisExecutor.execute {
             accum = null
             bulbFinishRequested = false
@@ -325,7 +350,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopBulb() {
         btnTake.alpha = 1f
-        if (!btnTake.isEnabled) return
+        if (!bulbHeld) return
+        bulbHeld = false
+        sound.secondCurtain()
         btnTake.isEnabled = false
         analysisExecutor.execute {
             if (!bulbActive) {
@@ -351,7 +378,7 @@ class MainActivity : AppCompatActivity() {
             }
             ioExecutor.execute {
                 setReciprocity(seconds)
-                developBitmap(bmp, rot, BULB_HEADROOM, afterDevelop = { setReciprocity(0f) })
+                handleExposure(bmp, rot, BULB_HEADROOM, afterDevelop = { setReciprocity(0f) })
             }
         }
     }
@@ -451,8 +478,149 @@ class MainActivity : AppCompatActivity() {
         val s = FilmStocks.all[i]
         params.stock = s
         isoValue = s.iso
-        stockName.text = "▸ ${s.name}   (dotknij, by zmienić kliszę)"
-        if (this::btnMode.isInitialized) applyExposure()
+        updateStockLabel()
+        applyExposure()
+    }
+
+    private fun changeStockByUser() {
+        if (roll.enabled && roll.count > 0) {
+            toast("W aparacie jest rolka „${params.stock.name}”. Dokończ ją albo wywołaj, żeby założyć inną kliszę.")
+            return
+        }
+        val next = (stockIndex + 1) % FilmStocks.all.size
+        roll.stockIndex = next
+        setStock(next)
+    }
+
+    private fun updateStockLabel() {
+        val s = params.stock
+        val frameInfo = when {
+            roll.full -> "rolka skończona"
+            roll.enabled -> "klatka ${roll.nextFrameNumber}/${roll.loadedSize}"
+            else -> "bez rolki"
+        }
+        val exp = if (latentExposures > 0) " · ekspozycja ${latentExposures + 1}" else ""
+        stockName.text = "▸ ${s.name} · $frameInfo$exp"
+        btnAdvance.text = when {
+            roll.full -> "Wywołaj rolkę"
+            params.manualAdvance && (!advanced || latentExposures > 0) -> "Naciągnij ⟳ !"
+            else -> "Naciągnij ⟳"
+        }
+        btnAdvance.alpha = if (roll.full || (params.manualAdvance && (!advanced || latentExposures > 0))) 1f else 0.45f
+    }
+
+    /** Czy migawkę można teraz wyzwolić – jak w mechanicznym aparacie. */
+    private fun canExpose(bulb: Boolean = false): Boolean {
+        if (developing) {
+            toast("Trwa wywoływanie rolki…")
+            return false
+        }
+        if (roll.full) {
+            toast("Koniec rolki! Wywołaj ją przyciskiem obok spustu.")
+            return false
+        }
+        if (params.manualAdvance && !advanced) {
+            if (!bulb && params.multiExposure && latentExposures > 0) return true
+            btnTake.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            toast(if (bulb && latentExposures > 0) "Najpierw zakończ wielokrotną ekspozycję – naciągnij film ⟳" else "Spust zablokowany – najpierw naciągnij film ⟳")
+            return false
+        }
+        return true
+    }
+
+    private fun currentExposureMs(): Long =
+        if (manualMode && manualSupported && !isBulb()) shutterNs[shutterIndex] / 1_000_000L else 17L
+
+    private fun shutterSoundAndFeel() {
+        sound.firstCurtain()
+        btnTake.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+        mainHandler.postDelayed({ sound.secondCurtain() }, max(currentExposureMs(), 25L))
+    }
+
+    private fun advanceFilm() {
+        if (developing) return
+        if (roll.full) {
+            developRoll()
+            return
+        }
+        if (!params.manualAdvance) {
+            toast("Naciąg jest automatyczny – ręczny włączysz w Ustawieniach")
+            return
+        }
+        if (advanced && latentExposures == 0) {
+            toast("Film jest już naciągnięty")
+            return
+        }
+        sound.advance()
+        btnAdvance.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+        btnAdvance.isEnabled = false
+        btnTake.isEnabled = false
+        ioExecutor.execute {
+            val lf = latent
+            latent = null
+            latentExposures = 0
+            advanced = true
+            if (lf != null) {
+                developBitmap(
+                    lf.bitmap, lf.rotation, LatentFrame.GAIN_STOPS,
+                    preMask = MaskData(lf.mask, lf.maskW, lf.maskH), needMask = false
+                )
+            } else {
+                runOnUiThread { btnTake.isEnabled = true }
+            }
+            runOnUiThread {
+                btnAdvance.isEnabled = true
+                updateStockLabel()
+            }
+        }
+    }
+
+    /** Wywołanie całej rolki: klatki trafiają do Galerii dopiero teraz. */
+    private fun developRoll() {
+        if (developing) return
+        val frames = roll.frames()
+        if (frames.isEmpty()) {
+            toast("Rolka jest pusta")
+            return
+        }
+        developing = true
+        btnTake.isEnabled = false
+        btnAdvance.isEnabled = false
+        toast("Wywoływanie: wywoływacz… przerywacz… utrwalacz… płukanie…")
+        ioExecutor.execute {
+            val stamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
+            var ok = 0
+            frames.forEachIndexed { i, f ->
+                try {
+                    val values = ContentValues().apply {
+                        put(MediaStore.Images.Media.DISPLAY_NAME, "ROLKA_${stamp}_%02d.jpg".format(i + 1))
+                        put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                        put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/NoirKamera")
+                        put(MediaStore.Images.Media.IS_PENDING, 1)
+                    }
+                    val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                    if (uri != null) {
+                        contentResolver.openOutputStream(uri)?.use { os -> f.inputStream().use { it.copyTo(os) } }
+                        values.clear()
+                        values.put(MediaStore.Images.Media.IS_PENDING, 0)
+                        contentResolver.update(uri, values, null, null)
+                        ok++
+                    }
+                } catch (e: Exception) {
+                    // pojedyncza klatka może się nie udać, jak w prawdziwej ciemni
+                }
+            }
+            Thread.sleep(1200)
+            roll.reset()
+            developing = false
+            advanced = true
+            runOnUiThread {
+                toast("Rolka wywołana: $ok zdjęć w Galerii → Pictures/NoirKamera")
+                btnTake.isEnabled = true
+                btnAdvance.isEnabled = true
+                updateStockLabel()
+            }
+        }
     }
 
     // ---------------------------------------------------------------- analiza klatek
@@ -593,6 +761,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun takePhoto() {
         val cap = imageCapture ?: return
+        if (!btnTake.isEnabled || !canExpose()) return
+        shutterSoundAndFeel()
         btnTake.isEnabled = false
         flashView.alpha = 0.7f
         flashView.animate().alpha(0f).setDuration(350).start()
@@ -634,7 +804,7 @@ class MainActivity : AppCompatActivity() {
             }
             val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
                 ?: throw IllegalStateException("Nie można odczytać zdjęcia")
-            developBitmap(bmp, rot, 0f)
+            handleExposure(bmp, rot, 0f)
         } catch (e: Throwable) {
             runOnUiThread {
                 btnTake.isEnabled = true
@@ -643,25 +813,67 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun developBitmap(bmp: Bitmap, rot: Int, inputGain: Float, afterDevelop: (() -> Unit)? = null) {
-        try {
-            var maskBuf: ByteBuffer? = null
-            var mw = 0
-            var mh = 0
-            val seg = stillSegmenter
-            if (params.aiEnabled && seg != null) {
-                try {
-                    val small = scaledUpright(bmp, rot, 512)
-                    val m = Tasks.await(seg.process(InputImage.fromBitmap(small, 0)))
-                    maskBuf = maskBytes(m)
-                    mw = m.width
-                    mh = m.height
-                } catch (e: Exception) {
-                    maskBuf = null
+    /**
+     * Światło trafiło na kliszę. Przy wielokrotnej ekspozycji dokładamy je do obrazu utajonego klatki,
+     * w przeciwnym razie klatka od razu idzie do "wywołania".
+     */
+    private fun handleExposure(bmp: Bitmap, rot: Int, inputGain: Float, afterDevelop: (() -> Unit)? = null) {
+        val multi = params.manualAdvance && params.multiExposure && inputGain == 0f
+        if (multi) {
+            try {
+                val m = computeMask(bmp, rot)
+                val lf = latent
+                if (lf == null) {
+                    val n = LatentFrame(bmp, rot)
+                    n.addMask(m?.buf, m?.w ?: 0, m?.h ?: 0, rot)
+                    latent = n
+                } else {
+                    lf.add(bmp)
+                    lf.addMask(m?.buf, m?.w ?: 0, m?.h ?: 0, rot)
+                }
+                bmp.recycle()
+                latentExposures = latent?.exposures ?: 0
+                advanced = false
+                runOnUiThread {
+                    btnTake.isEnabled = true
+                    updateStockLabel()
+                    if (latentExposures == 1) toast("Ekspozycja 1 na klatce. Zrób kolejną bez naciągania albo naciągnij film, by zakończyć.")
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    btnTake.isEnabled = true
+                    toast("Za mało pamięci na wielokrotną ekspozycję: ${e.message}")
                 }
             }
+            return
+        }
+        advanced = !params.manualAdvance
+        developBitmap(bmp, rot, inputGain, afterDevelop = afterDevelop)
+        runOnUiThread { updateStockLabel() }
+    }
 
-            val mb = maskBuf
+    private fun computeMask(bmp: Bitmap, rot: Int): MaskData? {
+        val seg = stillSegmenter ?: return null
+        if (!params.aiEnabled) return null
+        return try {
+            val small = scaledUpright(bmp, rot, 512)
+            val m = Tasks.await(seg.process(InputImage.fromBitmap(small, 0)))
+            MaskData(maskBytes(m), m.width, m.height)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun developBitmap(
+        bmp: Bitmap, rot: Int, inputGain: Float,
+        preMask: MaskData? = null, needMask: Boolean = true,
+        afterDevelop: (() -> Unit)? = null
+    ) {
+        try {
+            val md = if (needMask) computeMask(bmp, rot) else preMask
+            val mw = md?.w ?: 0
+            val mh = md?.h ?: 0
+            val mb = md?.buf
             glView.queueEvent {
                 val out = try {
                     renderer.renderStill(bmp, rot, mb, mw, mh, inputGain)
@@ -688,7 +900,28 @@ class MainActivity : AppCompatActivity() {
             }
             return
         }
+        var img: Bitmap = out
         try {
+            val frameNo = roll.nextFrameNumber
+            if (params.filmBorder) {
+                try {
+                    val framed = FilmBorder.apply(out, frameNo, params.stock.name)
+                    out.recycle()
+                    img = framed
+                } catch (e: Throwable) {
+                    img = out
+                }
+            }
+            if (roll.enabled) {
+                val finalImg = img
+                roll.store { os -> finalImg.compress(Bitmap.CompressFormat.JPEG, 95, os) }
+                runOnUiThread {
+                    updateStockLabel()
+                    if (roll.full) toast("Koniec rolki! Wywołaj ją przyciskiem obok spustu.")
+                }
+                return
+            }
+            roll.digitalCounter = frameNo
             val name = "NOIR_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) + ".jpg"
             val values = ContentValues().apply {
                 put(MediaStore.Images.Media.DISPLAY_NAME, name)
@@ -698,7 +931,7 @@ class MainActivity : AppCompatActivity() {
             }
             val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
                 ?: throw IllegalStateException("Brak miejsca w Galerii")
-            contentResolver.openOutputStream(uri)?.use { os -> out.compress(Bitmap.CompressFormat.JPEG, 95, os) }
+            contentResolver.openOutputStream(uri)?.use { os -> img.compress(Bitmap.CompressFormat.JPEG, 95, os) }
             values.clear()
             values.put(MediaStore.Images.Media.IS_PENDING, 0)
             contentResolver.update(uri, values, null, null)
@@ -706,8 +939,11 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             runOnUiThread { toast("Błąd zapisu: ${e.message}") }
         } finally {
-            out.recycle()
-            runOnUiThread { btnTake.isEnabled = true }
+            img.recycle()
+            runOnUiThread {
+                btnTake.isEnabled = true
+                updateStockLabel()
+            }
         }
     }
 
@@ -742,6 +978,34 @@ class MainActivity : AppCompatActivity() {
             isChecked = params.swirl
             setOnCheckedChangeListener { _, c -> params.swirl = c }
         })
+        panel.addView(header("APARAT ANALOGOWY"))
+        val sizes = intArrayOf(0, 12, 24, 36)
+        val curSize = sizes.indexOf(roll.nextSize).let { if (it < 0) 3 else it }.toFloat()
+        addSlider(panel, "Rolka", 0f, 3f, curSize, {
+            val v = sizes[it.roundToInt()]
+            if (v == 0) "bez rolki – zdjęcia od razu w Galerii" else "$v klatek"
+        }, steps = 3) {
+            roll.nextSize = sizes[it.roundToInt()]
+            if (roll.count > 0) toast("Nowa długość zadziała od następnej rolki")
+            updateStockLabel()
+        }
+        addCheck(panel, "Ręczne naciąganie filmu", params.manualAdvance) {
+            params.manualAdvance = it
+            if (!it) advanced = true
+            updateStockLabel()
+        }
+        addCheck(panel, "Wielokrotna ekspozycja (spust bez naciągania)", params.multiExposure) { params.multiExposure = it }
+        addCheck(panel, "Wizjer z matówką i klinem ostrości", params.viewfinder) { params.viewfinder = it }
+        addCheck(panel, "Ramka negatywu z perforacją na zdjęciach", params.filmBorder) { params.filmBorder = it }
+        addCheck(panel, "Dźwięk migawki", sound.enabled) { sound.enabled = it }
+        panel.addView(Button(this).apply {
+            text = "Przewiń i wywołaj rolkę teraz"
+            isAllCaps = false
+            setTextColor(Color.WHITE)
+            setBackgroundResource(R.drawable.pill)
+            setOnClickListener { developRoll() }
+        })
+
         panel.addView(header("APARAT"))
         addSlider(panel, "Korekta ekspozycji aparatu (AUTO)", -3f, 2f, 0f, { "%+.1f EV".format(it) }) {
             evComp = it
@@ -795,6 +1059,15 @@ class MainActivity : AppCompatActivity() {
         update(seek.progress, false)
         panel.addView(label)
         panel.addView(seek)
+    }
+
+    private fun addCheck(panel: LinearLayout, title: String, initial: Boolean, onChange: (Boolean) -> Unit) {
+        panel.addView(CheckBox(this).apply {
+            text = title
+            setTextColor(Color.WHITE)
+            isChecked = initial
+            setOnCheckedChangeListener { _, c -> onChange(c) }
+        })
     }
 
     private fun header(t: String) = TextView(this).apply {

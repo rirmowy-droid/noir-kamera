@@ -110,7 +110,7 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
             "uFrame", "uMask", "uRotation", "uFit", "uSpectral", "uExposure", "uContrast", "uToe",
             "uGrain", "uGrainSize", "uGlow", "uBloomLod", "uVignette", "uMaskAmount", "uDamage",
             "uTime", "uAspect", "uTint", "uFlip", "uInputGain", "uDepthOn", "uFocus", "uAperture",
-            "uSwirl", "uEdge", "uDiffusion", "uExpired", "uSeed"
+            "uSwirl", "uEdge", "uDiffusion", "uExpired", "uSeed", "uViewfinder"
         )
         uniforms.clear()
         for (n in names) uniforms[n] = GLES30.glGetUniformLocation(program, n)
@@ -205,7 +205,7 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
             fitX = asr / af; fitY = 1f
         }
         val time = (System.nanoTime() - startNs) / 1e9f
-        draw(frameTex, upW, upH, frameRot, fitX, fitY, false, time, if (maskValid && params.aiEnabled) maskTex else whiteTex, frameGain)
+        draw(frameTex, upW, upH, frameRot, fitX, fitY, false, time, if (maskValid && params.aiEnabled) maskTex else whiteTex, frameGain, params.viewfinder)
     }
 
     /**
@@ -248,7 +248,7 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
             if (status != GLES30.GL_FRAMEBUFFER_COMPLETE) throw IllegalStateException("FBO $status")
             GLES30.glViewport(0, 0, upW, upH)
             val seed = (System.nanoTime() % 100000L) / 37.0f
-            draw(src, upW, upH, rotation, 1f, 1f, true, seed, stillMask, inputGain)
+            draw(src, upW, upH, rotation, 1f, 1f, true, seed, stillMask, inputGain, false)
             GLES30.glPixelStorei(GLES30.GL_PACK_ALIGNMENT, 1)
             GLES30.glReadPixels(0, 0, upW, upH, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, out)
         } finally {
@@ -267,7 +267,7 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
 
     private fun draw(
         tex: Int, upW: Int, upH: Int, rotation: Int,
-        fitX: Float, fitY: Float, flip: Boolean, time: Float, mask: Int, inputGain: Float
+        fitX: Float, fitY: Float, flip: Boolean, time: Float, mask: Int, inputGain: Float, viewfinder: Boolean
     ) {
         val s = params.stock
         GLES30.glUseProgram(program)
@@ -312,6 +312,7 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
         GLES30.glUniform1f(u("uDiffusion"), params.diffusion)
         GLES30.glUniform1f(u("uExpired"), params.expired)
         GLES30.glUniform1f(u("uSeed"), params.expiredSeed)
+        GLES30.glUniform1f(u("uViewfinder"), if (viewfinder) 1f else 0f)
 
         quad.position(0)
         GLES30.glVertexAttribPointer(0, 2, GLES30.GL_FLOAT, false, 16, quad)

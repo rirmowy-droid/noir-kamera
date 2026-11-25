@@ -13,6 +13,15 @@ To nie jest filtr nakładany na gotowe zdjęcie. Aplikacja:
 - **ma obiektyw**: filtr dyfuzyjny („pończocha” z hollywoodzkich portretów), głębię ostrości z przysłoną f/1.4–f/16 i ręczną ostrość opartą na AI oraz wirujące rozmycie jak w Heliosie;
 - **pokazuje wszystko na żywo** w podglądzie, a zdjęcie „wywołuje” w pełnej rozdzielczości tym samym procesem.
 
+### Jak prawdziwy aparat
+
+- **Rolka** 12/24/36 klatek. Zdjęć nie widać, dopóki nie wywołasz całej rolki. Kliszy nie zmienisz w połowie rolki. Stan rolki przetrwa zamknięcie aplikacji.
+- **Ręczny naciąg filmu**: po każdym zdjęciu spust jest zablokowany, dopóki nie naciągniesz filmu (słychać zapadkę).
+- **Wielokrotna ekspozycja**: spust bez naciągania naświetla tę samą klatkę jeszcze raz. Światło się sumuje jak na emulsji.
+- **Wizjer z matówką**: faktura szkła, klin ostrości w środku (połówki schodzą się przy trafionej ostrości) i migoczący pierścień mikropryzmatów.
+- **Dźwięk migawki szczelinowej**: dwie kurtyny „klak… klak” rozdzielone prawdziwym czasem naświetlania.
+- **Ramka negatywu**: czarny brzeg, perforacja i numer klatki na odbitce (opcja).
+
 ## Instalacja na telefonie
 
 1. Na telefonie otwórz: **Releases → najnowsza wersja → `NoirKamera.apk`**
