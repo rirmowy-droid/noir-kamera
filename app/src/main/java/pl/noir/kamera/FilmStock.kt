@@ -22,6 +22,8 @@ package pl.noir.kamera
  * highTint      – kolor najjaśniejszej bieli (papier, wyblaknięcie)
  * halation      – kolor poświaty wokół świateł
  * tungsten      – klisza do światła sztucznego (aparat ustawia stały balans "żarówka")
+ * hueSat        – nasycenie zależne od barwy: czerwienie / zielenie / błękity
+ * dyeFade       – blaknięcie barwników odbitki: cyjan / magenta / żółty
  */
 class FilmStock(
     val name: String,
@@ -43,7 +45,9 @@ class FilmStock(
     val fadeLift: FloatArray = ZEROS,
     val highTint: FloatArray = ONES,
     val halation: FloatArray = ONES,
-    val tungsten: Boolean = false
+    val tungsten: Boolean = false,
+    val hueSat: FloatArray = ONES,   // nasycenie czerwieni / zieleni / błękitów
+    val dyeFade: FloatArray = ZEROS  // utrata barwnika: cyjan, magenta, żółty (0..1)
 )
 
 private val ID3 = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
@@ -81,28 +85,56 @@ object FilmStocks {
         ),
 
         // ---------------------------------------------------------- KOLOR (do lat 70.)
+        // Parametry dobrane na podstawie opisów archiwów filmowych i operatorów – interpretacje epok,
+        // nie wierne kopie konkretnych produktów.
 
-        // trzy taśmy barwne, jak w wielkich produkcjach kina końca lat 30.: soczyste barwy podstawowe, głęboka czerń
+        // proces dwubarwny końca lat 20.: tylko rekord czerwony i zielony – świat w pomarańczach
+        // i turkusach, bez prawdziwego błękitu i żółci
+        FilmStock(
+            "Kolor · Dwubarwny 1929 · ISO 12",
+            LUMA, 1.20f, 0.06f, 0.06f, 650f, 0.40f, 0.45f, NEUTRAL, 12,
+            color = true,
+            crosstalk = floatArrayOf(
+                1.00f, 0.05f, 0.00f,
+                0.05f, 0.85f, 0.15f,
+                0.03f, 0.80f, 0.20f
+            ),
+            layerOffset = floatArrayOf(0.10f, 0.0f, -0.05f),
+            saturation = 1.10f,
+            hueSat = floatArrayOf(1.20f, 1.0f, 1.0f),
+            highTint = floatArrayOf(1.0f, 0.97f, 0.90f),
+            halation = floatArrayOf(1.0f, 0.6f, 0.45f)
+        ),
+
+        // trzy taśmy + druk barwnikowy (imbibicja), połowa lat 30.–50.: bardzo drobne ziarno,
+        // ogromne nasycenie, czerń "kluczowana" osobnym obrazem (najgłębsza z możliwych),
+        // złocista skóra z nieczystości barwnika cyjanowego
         FilmStock(
             "Kolor · Trójbarwny 1939 · ISO 10",
-            LUMA, 1.35f, 0.06f, 0.05f, 600f, 0.45f, 0.35f, NEUTRAL, 10,
+            LUMA, 1.30f, 0.10f, 0.035f, 800f, 0.35f, 0.35f, NEUTRAL, 10,
             color = true,
             crosstalk = floatArrayOf(
                 1.15f, -0.10f, -0.05f,
                 -0.08f, 1.12f, -0.04f,
                 -0.04f, -0.12f, 1.16f
             ),
-            layerContrast = floatArrayOf(1.05f, 1.0f, 1.0f),
-            layerOffset = floatArrayOf(0.15f, 0.0f, -0.15f),
-            saturation = 1.35f,
-            highTint = floatArrayOf(1.0f, 0.98f, 0.94f),
+            layerOffset = floatArrayOf(0.12f, 0.02f, -0.12f),
+            dyeMix = floatArrayOf(
+                1.00f, 0.00f, 0.00f,
+                0.03f, 0.97f, 0.00f,
+                0.00f, 0.02f, 0.98f
+            ),
+            saturation = 1.30f,
+            hueSat = floatArrayOf(1.25f, 1.10f, 1.15f),
+            highTint = floatArrayOf(1.0f, 0.98f, 0.93f),
             halation = floatArrayOf(1.0f, 0.55f, 0.35f)
         ),
 
-        // przezrocze z lat 50.: bardzo drobne ziarno, mocny kontrast, głęboka czerwień, czyste niebo
+        // przezrocze lat 50.: legendarne czerwienie, błękity stonowane (przez co czerwień wydaje się
+        // jeszcze mocniejsza), wysoki kontrast, głęboka czerń, prawie niewidoczne ziarno
         FilmStock(
             "Kolor · Odwracalny 1955 · ISO 10",
-            LUMA, 1.50f, 0.08f, 0.04f, 700f, 0.25f, 0.30f, NEUTRAL, 10,
+            LUMA, 1.55f, 0.10f, 0.03f, 900f, 0.25f, 0.30f, NEUTRAL, 10,
             color = true,
             crosstalk = floatArrayOf(
                 1.08f, -0.05f, -0.03f,
@@ -110,79 +142,85 @@ object FilmStocks {
                 -0.02f, -0.06f, 1.08f
             ),
             layerContrast = floatArrayOf(1.05f, 1.0f, 0.95f),
-            layerOffset = floatArrayOf(0.20f, 0.0f, -0.05f),
-            dyeMix = floatArrayOf(
-                1.0f, 0.0f, 0.0f,
-                0.02f, 0.98f, 0.0f,
-                0.0f, 0.04f, 0.96f
-            ),
-            saturation = 1.25f,
+            layerOffset = floatArrayOf(0.15f, 0.02f, -0.08f),
+            saturation = 1.15f,
+            hueSat = floatArrayOf(1.40f, 1.10f, 0.80f),
             highTint = floatArrayOf(1.0f, 0.99f, 0.96f),
             halation = floatArrayOf(1.0f, 0.6f, 0.45f)
         ),
 
-        // wczesny negatyw kolorowy: miękki, przygaszony, zielonkawe cienie, ciepłe światła
+        // jednotaśmowy negatyw i świeża odbitka chromogeniczna początku lat 60.: miękka, ciepła,
+        // umiarkowanie nasycona, z delikatnie zielonkawymi cieniami
         FilmStock(
             "Kolor · Negatyw 1962 · ISO 64",
-            LUMA, 0.95f, 0.03f, 0.08f, 480f, 0.40f, 0.35f, NEUTRAL, 64,
+            LUMA, 1.00f, 0.04f, 0.08f, 480f, 0.40f, 0.35f, NEUTRAL, 64,
             color = true,
             crosstalk = floatArrayOf(
-                0.95f, 0.05f, 0.0f,
+                0.95f, 0.05f, 0.00f,
                 0.04f, 0.92f, 0.04f,
-                0.0f, 0.08f, 0.92f
+                0.00f, 0.08f, 0.92f
             ),
             layerContrast = floatArrayOf(0.95f, 1.0f, 1.08f),
-            layerOffset = floatArrayOf(0.05f, 0.12f, -0.10f),
-            saturation = 0.9f,
-            fadeLift = floatArrayOf(0.02f, 0.04f, 0.03f),
-            highTint = floatArrayOf(1.0f, 0.97f, 0.90f),
+            layerOffset = floatArrayOf(0.06f, 0.08f, -0.10f),
+            saturation = 0.95f,
+            hueSat = floatArrayOf(1.10f, 0.90f, 0.85f),
+            fadeLift = floatArrayOf(0.015f, 0.03f, 0.02f),
+            highTint = floatArrayOf(1.0f, 0.97f, 0.91f),
             halation = floatArrayOf(1.0f, 0.5f, 0.3f)
         ),
 
-        // klisza zza żelaznej kurtyny: chłodna, turkusowo-zielona, wyraźne ziarno
+        // klisza zza żelaznej kurtyny (na bazie dawnej technologii Agfy): stonowana paleta,
+        // niski kontrast, turkusowo-zielony nalot, "jakby dwa kolory", wyraźne ziarno
         FilmStock(
             "Kolor · Wschodni 1971 · ISO 50",
-            LUMA, 1.05f, 0.04f, 0.10f, 450f, 0.40f, 0.40f, NEUTRAL, 50,
+            LUMA, 0.90f, 0.02f, 0.11f, 420f, 0.40f, 0.40f, NEUTRAL, 50,
             color = true,
             crosstalk = floatArrayOf(
                 0.92f, 0.06f, 0.02f,
-                0.05f, 0.95f, 0.0f,
-                0.0f, 0.06f, 0.94f
+                0.05f, 0.95f, 0.00f,
+                0.00f, 0.06f, 0.94f
             ),
             layerContrast = floatArrayOf(0.90f, 1.05f, 1.05f),
-            layerOffset = floatArrayOf(-0.15f, 0.10f, 0.15f),
-            saturation = 0.85f,
-            fadeLift = floatArrayOf(0.0f, 0.03f, 0.04f),
-            highTint = floatArrayOf(1.0f, 0.96f, 0.98f),
+            layerOffset = floatArrayOf(-0.20f, 0.08f, 0.12f),
+            saturation = 0.75f,
+            hueSat = floatArrayOf(0.90f, 1.10f, 0.80f),
+            fadeLift = floatArrayOf(0.0f, 0.04f, 0.05f),
+            highTint = floatArrayOf(1.0f, 0.97f, 0.97f),
             halation = floatArrayOf(1.0f, 0.5f, 0.35f)
         ),
 
-        // negatyw kinowy do światła sztucznego z połowy lat 70.: czerwona halacja wokół lamp, nocne miasto
+        // negatyw kinowy 100T z połowy lat 70.: tylko ok. 7–8 działek rozpiętości, więc wysoki kontrast,
+        // głębokie cienie i jasne światła; soczyste czerwienie, chłodniejsze zielenie, neutralne szarości,
+        // czerwona halacja wokół lamp
         FilmStock(
             "Kolor · Kinowy 1975 · 100T (żarówka)",
-            LUMA, 1.10f, 0.04f, 0.09f, 460f, 0.70f, 0.35f, NEUTRAL, 100,
+            LUMA, 1.30f, 0.08f, 0.09f, 460f, 0.70f, 0.35f, NEUTRAL, 100,
             color = true,
             crosstalk = floatArrayOf(
                 1.04f, -0.03f, -0.01f,
-                -0.02f, 1.03f, -0.01f,
+                -0.02f, 1.00f, 0.02f,
                 -0.01f, -0.04f, 1.05f
             ),
-            layerOffset = floatArrayOf(0.08f, 0.0f, 0.0f),
+            layerOffset = floatArrayOf(0.05f, 0.0f, 0.02f),
             saturation = 1.05f,
+            hueSat = floatArrayOf(1.35f, 0.85f, 1.0f),
             halation = floatArrayOf(1.0f, 0.35f, 0.2f),
             tungsten = true
         ),
 
-        // odbitka z rodzinnego albumu z lat 70., po latach w szufladzie: barwniki wyblakły, została czerwień
+        // odbitka chromogeniczna z lat 70. po latach: barwnik cyjanowy wyblakł najbardziej,
+        // potem żółty, magenta przetrwała – obraz idzie w czerwień i róż, najmocniej w cieniach,
+        // a w światłach ginie detal
         FilmStock(
             "Kolor · Wyblakła odbitka 1974 · ISO 100",
-            LUMA, 0.85f, 0.0f, 0.08f, 480f, 0.40f, 0.40f, NEUTRAL, 100,
+            LUMA, 1.00f, 0.03f, 0.08f, 480f, 0.40f, 0.40f, NEUTRAL, 100,
             color = true,
-            layerContrast = floatArrayOf(1.05f, 0.85f, 0.70f),
-            layerOffset = floatArrayOf(0.35f, 0.0f, -0.25f),
-            saturation = 0.75f,
-            fadeLift = floatArrayOf(0.08f, 0.04f, 0.06f),
-            highTint = floatArrayOf(1.0f, 0.93f, 0.88f),
+            layerOffset = floatArrayOf(0.05f, 0.0f, 0.0f),
+            saturation = 0.90f,
+            hueSat = floatArrayOf(1.10f, 0.95f, 0.90f),
+            dyeFade = floatArrayOf(0.55f, 0.10f, 0.40f),
+            fadeLift = floatArrayOf(0.03f, 0.01f, 0.02f),
+            highTint = floatArrayOf(1.0f, 0.97f, 0.95f),
             halation = floatArrayOf(1.0f, 0.6f, 0.5f)
         )
     )

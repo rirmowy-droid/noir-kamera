@@ -66,6 +66,8 @@ uniform float uSaturation;
 uniform vec3 uFadeLift;
 uniform vec3 uHighTint;
 uniform vec3 uHalation;
+uniform vec3 uHueSat;
+uniform vec3 uDyeFade;
 
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
 
@@ -221,8 +223,16 @@ void main() {
     // barwniki: nieczyste barwniki, nasycenie, starzenie (kolor cieni i świateł)
     if (uColorStock > 0.5) {
         y = clamp(uDyeMix * y, 0.0, 1.0);
+        // nasycenie zależne od barwy (np. mocne czerwienie, stonowane błękity)
         float l = dot(y, LUMA);
-        y = clamp(mix(vec3(l), y, uSaturation), 0.0, 1.0);
+        vec3 chroma = y - l;
+        vec3 w = abs(chroma);
+        float ws = w.r + w.g + w.b;
+        float hs = ws > 1e-4 ? dot(w / ws, uHueSat) : 1.0;
+        y = clamp(l + chroma * uSaturation * hs, 0.0, 1.0);
+        // blaknięcie barwników: każdy barwnik traci gęstość proporcjonalnie do tego, ile go było,
+        // więc najmocniej przebarwiają się cienie (cyjan -> czerwień, magenta -> zieleń, żółty -> błękit)
+        y = 1.0 - (1.0 - y) * (1.0 - uDyeFade);
         y = uFadeLift + y * (uHighTint - uFadeLift);
     }
 

@@ -17,12 +17,13 @@ To nie jest filtr nakładany na gotowe zdjęcie. Aplikacja:
 
 Kolorowa klisza ma trzy warstwy (czułą na czerwień, zieleń i błękit), każdą z własną krzywą, z przesłuchem między warstwami, nieczystymi barwnikami i czerwoną halacją wokół świateł:
 
-- **Trójbarwny 1939**: soczyste barwy podstawowe, jak kino końca lat 30.
-- **Odwracalny 1955**: przezrocze, drobne ziarno, głęboka czerwień.
+- **Dwubarwny 1929**: tylko czerwony i zielony rekord, świat w pomarańczach i turkusach.
+- **Trójbarwny 1939**: druk barwnikowy, ogromne nasycenie, najgłębsza czerń, złocista skóra, bardzo drobne ziarno.
+- **Odwracalny 1955**: legendarne czerwienie, stonowane błękity, wysoki kontrast.
 - **Negatyw 1962**: miękki, przygaszony, zielonkawe cienie.
 - **Wschodni 1971**: chłodny, turkusowo-zielony, wyraźne ziarno.
-- **Kinowy 1975 100T**: do światła sztucznego, czerwona poświata wokół lamp.
-- **Wyblakła odbitka 1974**: jak zdjęcie z albumu po latach.
+- **Kinowy 1975 100T**: tylko 7–8 działek rozpiętości (twardy kontrast), soczyste czerwienie, chłodne zielenie, czerwona poświata wokół lamp.
+- **Wyblakła odbitka 1974**: barwnik cyjanowy i żółty wyblakły, obraz idzie w czerwień i róż, najmocniej w cieniach.
 
 Kolorowe klisze mają **stały balans bieli**: dzienna pod żarówką daje pomarańczowe zdjęcia, a „T” w słońcu niebieskie, tak jak prawdziwa emulsja. Przytrzymaj nazwę kliszy, żeby wybrać ją z listy.
 

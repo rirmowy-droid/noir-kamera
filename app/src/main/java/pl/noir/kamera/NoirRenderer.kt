@@ -112,7 +112,7 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
             "uTime", "uAspect", "uTint", "uFlip", "uInputGain", "uDepthOn", "uFocus", "uAperture",
             "uSwirl", "uEdge", "uDiffusion", "uExpired", "uSeed", "uViewfinder",
             "uColorStock", "uCrosstalk", "uLayerContrast", "uLayerOffset", "uDyeMix", "uSaturation",
-            "uFadeLift", "uHighTint", "uHalation"
+            "uFadeLift", "uHighTint", "uHalation", "uHueSat", "uDyeFade"
         )
         uniforms.clear()
         for (n in names) uniforms[n] = GLES30.glGetUniformLocation(program, n)
@@ -326,6 +326,8 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
         GLES30.glUniform3f(u("uFadeLift"), s.fadeLift[0], s.fadeLift[1], s.fadeLift[2])
         GLES30.glUniform3f(u("uHighTint"), s.highTint[0], s.highTint[1], s.highTint[2])
         GLES30.glUniform3f(u("uHalation"), s.halation[0], s.halation[1], s.halation[2])
+        GLES30.glUniform3f(u("uHueSat"), s.hueSat[0], s.hueSat[1], s.hueSat[2])
+        GLES30.glUniform3f(u("uDyeFade"), s.dyeFade[0], s.dyeFade[1], s.dyeFade[2])
 
         quad.position(0)
         GLES30.glVertexAttribPointer(0, 2, GLES30.GL_FLOAT, false, 16, quad)
