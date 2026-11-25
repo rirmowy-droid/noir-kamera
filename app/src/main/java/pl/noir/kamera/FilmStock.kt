@@ -215,7 +215,7 @@ class LookParams {
 
     // doświadczenie aparatu
     @Volatile var viewfinder = true         // matówka z klinem ostrości w podglądzie
-    @Volatile var manualAdvance = true      // film trzeba naciągnąć po każdym zdjęciu
+    @Volatile var manualAdvance = false     // film trzeba naciągnąć po każdym zdjęciu
     @Volatile var multiExposure = false     // spust bez naciągu = kolejna ekspozycja na tej samej klatce
     @Volatile var filmBorder = false        // odbitka z ramką negatywu
 

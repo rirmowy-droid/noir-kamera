@@ -14,7 +14,7 @@ class Roll(context: Context) {
 
     /** Długość następnej rolki: 0 = bez rolki (zdjęcia od razu w Galerii), 12, 24 lub 36. */
     var nextSize: Int
-        get() = prefs.getInt("nextSize", 36)
+        get() = prefs.getInt("nextSize", 0)
         set(v) = prefs.edit().putInt("nextSize", v).apply()
 
     /** Długość rolki, która jest teraz w aparacie. */

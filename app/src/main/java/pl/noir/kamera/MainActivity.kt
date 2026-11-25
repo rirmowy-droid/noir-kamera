@@ -544,6 +544,8 @@ class MainActivity : AppCompatActivity() {
             params.manualAdvance && (!advanced || latentExposures > 0) -> "Naciągnij ⟳ !"
             else -> "Naciągnij ⟳"
         }
+        val advanceNeeded = roll.enabled || params.manualAdvance
+        btnAdvance.visibility = if (advanceNeeded) View.VISIBLE else View.INVISIBLE
         btnAdvance.alpha = if (roll.full || (params.manualAdvance && (!advanced || latentExposures > 0))) 1f else 0.45f
     }
 
