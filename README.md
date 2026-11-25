@@ -13,6 +13,19 @@ To nie jest filtr nakładany na gotowe zdjęcie. Aplikacja:
 - **ma obiektyw**: filtr dyfuzyjny („pończocha” z hollywoodzkich portretów), głębię ostrości z przysłoną f/1.4–f/16 i ręczną ostrość opartą na AI oraz wirujące rozmycie jak w Heliosie;
 - **pokazuje wszystko na żywo** w podglądzie, a zdjęcie „wywołuje” w pełnej rozdzielczości tym samym procesem.
 
+### Klisze kolorowe (do lat 70.)
+
+Kolorowa klisza ma trzy warstwy (czułą na czerwień, zieleń i błękit), każdą z własną krzywą, z przesłuchem między warstwami, nieczystymi barwnikami i czerwoną halacją wokół świateł:
+
+- **Trójbarwny 1939**: soczyste barwy podstawowe, jak kino końca lat 30.
+- **Odwracalny 1955**: przezrocze, drobne ziarno, głęboka czerwień.
+- **Negatyw 1962**: miękki, przygaszony, zielonkawe cienie.
+- **Wschodni 1971**: chłodny, turkusowo-zielony, wyraźne ziarno.
+- **Kinowy 1975 100T**: do światła sztucznego, czerwona poświata wokół lamp.
+- **Wyblakła odbitka 1974**: jak zdjęcie z albumu po latach.
+
+Kolorowe klisze mają **stały balans bieli**: dzienna pod żarówką daje pomarańczowe zdjęcia, a „T” w słońcu niebieskie, tak jak prawdziwa emulsja. Przytrzymaj nazwę kliszy, żeby wybrać ją z listy.
+
 ### Jak prawdziwy aparat
 
 - **Rolka** 12/24/36 klatek. Zdjęć nie widać, dopóki nie wywołasz całej rolki. Kliszy nie zmienisz w połowie rolki. Stan rolki przetrwa zamknięcie aplikacji.

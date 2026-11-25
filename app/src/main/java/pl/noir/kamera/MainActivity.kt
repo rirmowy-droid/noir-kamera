@@ -181,6 +181,7 @@ class MainActivity : AppCompatActivity() {
 
         setStock(if (roll.count > 0) roll.stockIndex.coerceIn(0, FilmStocks.all.size - 1) else 0)
         stockName.setOnClickListener { changeStockByUser() }
+        stockName.setOnLongClickListener { pickStock(); true }
         btnAdvance.setOnClickListener { advanceFilm() }
         btnMode.setOnClickListener { toggleMode() }
         btnIso.setOnClickListener { cycleIso() }
@@ -295,19 +296,32 @@ class MainActivity : AppCompatActivity() {
     private fun applyExposure() {
         val cam = camera ?: return
         val c2 = Camera2CameraControl.from(cam.cameraControl)
-        if (manualMode && manualSupported) {
+        val opts = CaptureRequestOptions.Builder()
+        var custom = false
+        val manual = manualMode && manualSupported
+        if (manual) {
             val iso = isoRange?.clamp(isoValue) ?: isoValue
             val exp = expRange?.clamp(shutterNs[shutterIndex]) ?: shutterNs[shutterIndex]
-            val opts = CaptureRequestOptions.Builder()
-                .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+            opts.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
                 .setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, iso)
                 .setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, exp)
                 .setCaptureRequestOption(CaptureRequest.SENSOR_FRAME_DURATION, max(exp, 33_333_333L))
-                .build()
-            c2.setCaptureRequestOptions(opts)
+            custom = true
+        }
+        // kolorowa klisza ma stały balans bieli: dzienna pod żarówką robi się pomarańczowa,
+        // a "T" (sztuczne światło) w słońcu – niebieska. Dokładnie jak prawdziwa emulsja.
+        val s = params.stock
+        if (s.color && params.fixedWhiteBalance) {
+            opts.setCaptureRequestOption(
+                CaptureRequest.CONTROL_AWB_MODE,
+                if (s.tungsten) CaptureRequest.CONTROL_AWB_MODE_INCANDESCENT else CaptureRequest.CONTROL_AWB_MODE_DAYLIGHT
+            )
+            custom = true
+        }
+        if (custom) c2.setCaptureRequestOptions(opts.build()) else c2.clearCaptureRequestOptions()
+        if (manual) {
             setReciprocity(if (isBulb()) 0f else shutterNs[shutterIndex] / 1e9f)
         } else {
-            c2.clearCaptureRequestOptions()
             applyEvComp()
             setReciprocity(0f)
         }
@@ -482,14 +496,38 @@ class MainActivity : AppCompatActivity() {
         applyExposure()
     }
 
-    private fun changeStockByUser() {
+    private fun stockLocked(): Boolean {
         if (roll.enabled && roll.count > 0) {
             toast("W aparacie jest rolka „${params.stock.name}”. Dokończ ją albo wywołaj, żeby założyć inną kliszę.")
-            return
+            return true
         }
-        val next = (stockIndex + 1) % FilmStocks.all.size
-        roll.stockIndex = next
-        setStock(next)
+        return false
+    }
+
+    private fun changeStockByUser() {
+        if (stockLocked()) return
+        loadStock((stockIndex + 1) % FilmStocks.all.size)
+    }
+
+    private fun pickStock() {
+        if (stockLocked()) return
+        val names = FilmStocks.all.map { it.name }.toTypedArray()
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Załóż kliszę")
+            .setSingleChoiceItems(names, stockIndex) { d, which ->
+                loadStock(which)
+                d.dismiss()
+            }
+            .show()
+    }
+
+    private fun loadStock(i: Int) {
+        roll.stockIndex = i
+        setStock(i)
+        val s = FilmStocks.all[i]
+        if (s.color && params.fixedWhiteBalance) {
+            toast(if (s.tungsten) "Klisza do światła sztucznego – w słońcu zdjęcia będą niebieskie" else "Klisza dzienna – pod żarówką zdjęcia będą pomarańczowe")
+        }
     }
 
     private fun updateStockLabel() {
@@ -998,6 +1036,10 @@ class MainActivity : AppCompatActivity() {
         addCheck(panel, "Wizjer z matówką i klinem ostrości", params.viewfinder) { params.viewfinder = it }
         addCheck(panel, "Ramka negatywu z perforacją na zdjęciach", params.filmBorder) { params.filmBorder = it }
         addCheck(panel, "Dźwięk migawki", sound.enabled) { sound.enabled = it }
+        addCheck(panel, "Stały balans bieli kolorowej kliszy (dzienna / żarówka)", params.fixedWhiteBalance) {
+            params.fixedWhiteBalance = it
+            applyExposure()
+        }
         panel.addView(Button(this).apply {
             text = "Przewiń i wywołaj rolkę teraz"
             isAllCaps = false

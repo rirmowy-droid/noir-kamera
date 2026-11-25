@@ -110,7 +110,9 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
             "uFrame", "uMask", "uRotation", "uFit", "uSpectral", "uExposure", "uContrast", "uToe",
             "uGrain", "uGrainSize", "uGlow", "uBloomLod", "uVignette", "uMaskAmount", "uDamage",
             "uTime", "uAspect", "uTint", "uFlip", "uInputGain", "uDepthOn", "uFocus", "uAperture",
-            "uSwirl", "uEdge", "uDiffusion", "uExpired", "uSeed", "uViewfinder"
+            "uSwirl", "uEdge", "uDiffusion", "uExpired", "uSeed", "uViewfinder",
+            "uColorStock", "uCrosstalk", "uLayerContrast", "uLayerOffset", "uDyeMix", "uSaturation",
+            "uFadeLift", "uHighTint", "uHalation"
         )
         uniforms.clear()
         for (n in names) uniforms[n] = GLES30.glGetUniformLocation(program, n)
@@ -313,6 +315,17 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
         GLES30.glUniform1f(u("uExpired"), params.expired)
         GLES30.glUniform1f(u("uSeed"), params.expiredSeed)
         GLES30.glUniform1f(u("uViewfinder"), if (viewfinder) 1f else 0f)
+
+        // kolor: macierze podawane wierszami (transpose = true, dozwolone w OpenGL ES 3)
+        GLES30.glUniform1f(u("uColorStock"), if (s.color) 1f else 0f)
+        GLES30.glUniformMatrix3fv(u("uCrosstalk"), 1, true, s.crosstalk, 0)
+        GLES30.glUniformMatrix3fv(u("uDyeMix"), 1, true, s.dyeMix, 0)
+        GLES30.glUniform3f(u("uLayerContrast"), s.layerContrast[0], s.layerContrast[1], s.layerContrast[2])
+        GLES30.glUniform3f(u("uLayerOffset"), s.layerOffset[0], s.layerOffset[1], s.layerOffset[2])
+        GLES30.glUniform1f(u("uSaturation"), s.saturation)
+        GLES30.glUniform3f(u("uFadeLift"), s.fadeLift[0], s.fadeLift[1], s.fadeLift[2])
+        GLES30.glUniform3f(u("uHighTint"), s.highTint[0], s.highTint[1], s.highTint[2])
+        GLES30.glUniform3f(u("uHalation"), s.halation[0], s.halation[1], s.halation[2])
 
         quad.position(0)
         GLES30.glVertexAttribPointer(0, 2, GLES30.GL_FLOAT, false, 16, quad)

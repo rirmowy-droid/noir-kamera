@@ -16,8 +16,12 @@ void main() {
     /**
      * Droga światła, jak w prawdziwym aparacie i ciemni:
      * OBIEKTYW  – głębia ostrości (mapa AI), wirujące rozmycie, dyfuzja, miękkość, winieta
-     * KLISZA    – czułość widmowa, halacja, przeterminowanie, krzywa charakterystyczna, ziarno
-     * CIEMNIA   – efekt krawędziowy wywoływacza, gradacja papieru (kontrast), ton odbitki
+     * KLISZA    – czułość widmowa warstw, halacja, przeterminowanie, krzywe charakterystyczne, ziarno
+     * CIEMNIA   – efekt krawędziowy, gradacja papieru, barwniki (kolor), starzenie odbitki, ton
+     *
+     * Czarno-biała klisza = jedna warstwa (wszystkie kanały równe).
+     * Kolorowa = trzy warstwy (czuła na czerwień, zieleń, błękit) z własnymi krzywymi,
+     * przesłuchem między warstwami i nieczystymi barwnikami.
      */
     const val FRAGMENT = """#version 300 es
 precision highp float;
@@ -53,6 +57,18 @@ uniform float uAspect;
 uniform vec3 uTint;
 uniform float uViewfinder;
 
+uniform float uColorStock;
+uniform mat3 uCrosstalk;
+uniform vec3 uLayerContrast;
+uniform vec3 uLayerOffset;
+uniform mat3 uDyeMix;
+uniform float uSaturation;
+uniform vec3 uFadeLift;
+uniform vec3 uHighTint;
+uniform vec3 uHalation;
+
+const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+
 vec2 toTex(vec2 uv) {
     if (uRotation == 1) return vec2(uv.y, 1.0 - uv.x);
     if (uRotation == 2) return vec2(1.0 - uv.x, 1.0 - uv.y);
@@ -77,12 +93,13 @@ float vnoise(vec2 p) {
     return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
-float lum(vec3 c) {
-    return dot(pow(max(c, vec3(0.0)), vec3(2.2)), uSpectral);
+// światło padające na emulsję (liniowe RGB)
+vec3 lin3(vec3 c) {
+    return pow(max(c, vec3(0.0)), vec3(2.2));
 }
 
-float expo(vec2 uv, float lod) {
-    return lum(textureLod(uFrame, toTex(clamp(uv, 0.0, 1.0)), lod).rgb);
+vec3 expo(vec2 uv, float lod) {
+    return lin3(textureLod(uFrame, toTex(clamp(uv, 0.0, 1.0)), lod).rgb);
 }
 
 float subjectAt(vec2 uv) {
@@ -90,10 +107,10 @@ float subjectAt(vec2 uv) {
 }
 
 // głębia ostrości: AI mówi, co jest postacią (blisko), a co tłem (daleko)
-float optical(vec2 uv, out float coc) {
+vec3 optical(vec2 uv, out float coc) {
     float depth = uDepthOn > 0.5 ? 1.0 - subjectAt(uv) : uFocus;
     coc = clamp(abs(depth - uFocus) * uAperture, 0.0, 1.0);
-    if (coc < 0.02) return lum(texture(uFrame, toTex(uv)).rgb);
+    if (coc < 0.02) return lin3(texture(uFrame, toTex(uv)).rgb);
     float lod = coc * max(uBloomLod - 1.0, 1.0);
     float rad = coc * 0.022;
     vec2 d = uv - 0.5;
@@ -112,6 +129,12 @@ float optical(vec2 uv, out float coc) {
     return expo(uv, lod) * 0.36
         + (expo(uv + o1, lod) + expo(uv - o1, lod)) * 0.2
         + (expo(uv + o2, lod) + expo(uv - o2, lod)) * 0.12;
+}
+
+// co "widzą" warstwy emulsji
+vec3 layers(vec3 c) {
+    if (uColorStock > 0.5) return max(uCrosstalk * c, vec3(0.0));
+    return vec3(dot(c, uSpectral));
 }
 
 void main() {
@@ -135,7 +158,7 @@ void main() {
         ouv.x += (vc.y < 0.0 ? shift : -shift) / uAspect;
     }
     float coc;
-    float e = optical(ouv, coc);
+    vec3 e = optical(ouv, coc);
 
     // pierścień mikropryzmatów: migocze, gdy obraz jest nieostry
     if (uViewfinder > 0.5 && vr >= splitR && vr < prismR) {
@@ -144,27 +167,29 @@ void main() {
         e *= 1.0 + sparkle * 1.6 * clamp(coc * 3.0, 0.0, 1.0);
     }
 
-    // efekt krawędziowy wywoływacza: granice jasne/ciemne nabierają "ostrości" starej odbitki
+    // efekt krawędziowy wywoływacza
     if (uEdge > 0.001) {
-        float local = expo(uv, max(uBloomLod - 2.5, 0.0));
-        float ratio = clamp((e + 1e-4) / (local + 1e-4), 0.25, 4.0);
-        e *= pow(ratio, uEdge * 0.7 * (1.0 - coc));
+        vec3 local = expo(uv, max(uBloomLod - 2.5, 0.0));
+        vec3 ratio = clamp((e + 1e-4) / (local + 1e-4), vec3(0.25), vec3(4.0));
+        e *= pow(ratio, vec3(uEdge * 0.7 * (1.0 - coc)));
     }
 
     // miękkość starego obiektywu i filtr dyfuzyjny ("pończocha")
-    float soft = expo(uv, max(uBloomLod - 3.0, 0.0));
+    vec3 soft = expo(uv, max(uBloomLod - 3.0, 0.0));
     e = mix(e, max(e, soft), 0.35 * uGlow);
-    float wide = expo(uv, max(uBloomLod - 1.0, 0.0));
+    vec3 wide = expo(uv, max(uBloomLod - 1.0, 0.0));
     e = mix(e, soft, uDiffusion * 0.3);
-    e += max(wide - e, 0.0) * uDiffusion * 0.6;
+    e += max(wide - e, vec3(0.0)) * uDiffusion * 0.6;
 
-    // halacja: szeroka poświata wokół jasnych źródeł
+    // halacja: światło odbite od podłoża kliszy – w kolorowej najgłębiej leży warstwa czerwona
     vec2 r = vec2(0.018 / uAspect, 0.018);
-    float g = expo(uv, uBloomLod) * 0.4
+    vec3 g = expo(uv, uBloomLod) * 0.4
         + (expo(uv + vec2(r.x, 0.0), uBloomLod) + expo(uv - vec2(r.x, 0.0), uBloomLod)
         +  expo(uv + vec2(0.0, r.y), uBloomLod) + expo(uv - vec2(0.0, r.y), uBloomLod)) * 0.15;
-    float bright = max(g * gain - 0.6, 0.0);
-    e = e * gain + bright * uGlow * 0.8;
+    float bright = max(dot(g, uSpectral) * gain - 0.6, 0.0);
+
+    // naświetlenie warstw emulsji
+    e = layers(e) * gain + bright * uGlow * 0.8 * uHalation;
 
     // przeterminowana klisza: nierówna czułość emulsji
     if (uExpired > 0.001) {
@@ -187,28 +212,44 @@ void main() {
         e *= 1.0 + (hash(vec2(frameNo, 7.0)) - 0.5) * 0.14;
     }
 
-    // krzywa charakterystyczna (stopa - prosta - ramię) × gradacja papieru
+    // krzywe charakterystyczne warstw (stopa - prosta - ramię) × gradacja papieru
     float contrast = uContrast * (1.0 - 0.35 * uExpired);
-    float x = log2(max(e, 1e-5) / 0.18);
-    float y = 1.0 / (1.0 + exp(-contrast * x * 0.9));
+    vec3 x = log2(max(e, vec3(1e-5)) / 0.18) + uLayerOffset;
+    vec3 y = 1.0 / (1.0 + exp(-contrast * uLayerContrast * x * 0.9));
     y = clamp((y - uToe) / (0.985 - uToe), 0.0, 1.0);
 
-    // zadymienie przeterminowanej kliszy: szare czernie, przygaszone biele
-    y = mix(y, 0.45, 0.28 * uExpired);
+    // barwniki: nieczyste barwniki, nasycenie, starzenie (kolor cieni i świateł)
+    if (uColorStock > 0.5) {
+        y = clamp(uDyeMix * y, 0.0, 1.0);
+        float l = dot(y, LUMA);
+        y = clamp(mix(vec3(l), y, uSaturation), 0.0, 1.0);
+        y = uFadeLift + y * (uHighTint - uFadeLift);
+    }
 
-    // ziarno: najsilniejsze w półtonach, każde zdjęcie/klatka ma inny układ
+    // zadymienie przeterminowanej kliszy: szare czernie, przygaszone biele
+    y = mix(y, vec3(0.45), 0.28 * uExpired);
+
+    // ziarno: najsilniejsze w półtonach; w kolorze chmurki barwnika w każdej warstwie osobno
     vec2 gp = vec2(uv.x * uAspect, uv.y) * uGrainSize;
     vec2 seed = vec2(hash(vec2(uTime, 1.3)), hash(vec2(uTime, 9.1))) * 512.0;
     float n = vnoise(gp + seed) * 0.65 + vnoise(gp * 2.3 + seed.yx) * 0.35 - 0.5;
-    float amp = uGrain * (0.45 + 2.2 * y * (1.0 - y)) * (1.0 + 0.8 * uExpired);
-    y = clamp(y + n * amp * 2.0, 0.0, 1.0);
+    vec3 n3 = vec3(n);
+    if (uColorStock > 0.5) {
+        vec3 own = vec3(
+            vnoise(gp * 1.3 + seed + 17.0),
+            vnoise(gp * 1.3 + seed + 41.0),
+            vnoise(gp * 1.3 + seed + 73.0)) - 0.5;
+        n3 = n3 * 0.55 + own * 0.45;
+    }
+    vec3 amp = uGrain * (0.45 + 2.2 * y * (1.0 - y)) * (1.0 + 0.8 * uExpired);
+    y = clamp(y + n3 * amp * 2.0, 0.0, 1.0);
 
     // rysy i kurz na taśmie
     if (uDamage > 0.5) {
         float sx = hash(vec2(frameNo, 3.7));
         float scratchOn = step(0.55, hash(vec2(frameNo, 5.1)));
         float scratch = scratchOn * (1.0 - smoothstep(0.0, 0.0015, abs(uv.x - sx)));
-        y = mix(y, 0.95, scratch * 0.5);
+        y = mix(y, vec3(0.95), scratch * 0.5);
         vec2 cellUv = uv * vec2(uAspect, 1.0) * 60.0;
         float dust = hash(floor(cellUv) + frameNo);
         if (dust > 0.997) {
@@ -228,7 +269,7 @@ void main() {
         y = mix(y, y * 0.45, max(max(ring1, ring2), splitLine * 0.6));
     }
 
-    fragColor = vec4(clamp(vec3(y) * uTint, 0.0, 1.0), 1.0);
+    fragColor = vec4(clamp(y * uTint, 0.0, 1.0), 1.0);
 }
 """
 }
