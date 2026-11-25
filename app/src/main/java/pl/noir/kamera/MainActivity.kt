@@ -16,6 +16,7 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.util.Range
 import android.util.Size
+import android.view.MotionEvent
 import android.view.OrientationEventListener
 import android.view.Surface
 import android.view.View
@@ -63,6 +64,14 @@ import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
 
+    companion object {
+        /** Zapas jasności przy sumowaniu w trybie B: 2^5 = 32 klatki zanim "zabraknie skali". */
+        const val BULB_HEADROOM = 5f
+        const val HEADROOM_LINEAR = 32f
+        val F_STOPS = arrayOf("1.4", "2", "2.8", "4", "5.6", "8", "11", "16")
+        val F_STOPS_VAL = floatArrayOf(1.4f, 2f, 2.8f, 4f, 5.6f, 8f, 11f, 16f)
+    }
+
     private val params = LookParams()
     private lateinit var glView: GLSurfaceView
     private lateinit var renderer: NoirRenderer
@@ -97,11 +106,27 @@ class MainActivity : AppCompatActivity() {
     private var frameCount = 0
 
     private val isoSteps = intArrayOf(25, 50, 100, 200, 400, 800, 1600)
-    private val shutterLabels = arrayOf("1/1000", "1/500", "1/250", "1/125", "1/60", "1/30", "1/15", "1/8", "1/4", "1/2", "1 s")
+    private val shutterLabels = arrayOf("1/1000", "1/500", "1/250", "1/125", "1/60", "1/30", "1/15", "1/8", "1/4", "1/2", "1 s", "B")
+    // dla "B" każda klatka trwa 1/30 s, a aplikacja sumuje światło kolejnych klatek
     private val shutterNs = longArrayOf(
         1_000_000L, 2_000_000L, 4_000_000L, 8_000_000L, 16_666_667L, 33_333_333L,
-        66_666_667L, 125_000_000L, 250_000_000L, 500_000_000L, 1_000_000_000L
+        66_666_667L, 125_000_000L, 250_000_000L, 500_000_000L, 1_000_000_000L, 33_333_333L
     )
+    private val bulbIndex = 11
+
+    // ---- tryb B (Bulb): sumowanie światła
+    @Volatile private var bulbActive = false
+    private var bulbFinishRequested = false
+    private var accum: FloatArray? = null
+    private var bulbBytes: ByteArray? = null
+    private var frameBytes: ByteArray? = null
+    private var bulbStartNs = 0L
+    private var bulbW = 0
+    private var bulbH = 0
+    private var bulbRot = 0
+    @Volatile private var bulbSeconds = 0f
+    private val linLut = FloatArray(256) { Math.pow(it / 255.0, 2.2).toFloat() }
+    private val encLut = ByteArray(4096) { (Math.pow(it / 4095.0, 1.0 / 2.2) * 255.0).roundToInt().coerceIn(0, 255).toByte() }
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -141,7 +166,15 @@ class MainActivity : AppCompatActivity() {
         btnIso.setOnClickListener { cycleIso() }
         btnShutterSpeed.setOnClickListener { cycleShutter(1) }
         btnShutterSpeed.setOnLongClickListener { cycleShutter(-1); true }
-        btnTake.setOnClickListener { takePhoto() }
+        btnTake.setOnClickListener { if (!isBulb()) takePhoto() }
+        btnTake.setOnTouchListener { _, ev ->
+            if (!isBulb()) return@setOnTouchListener false
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> startBulb()
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> stopBulb()
+            }
+            true
+        }
         val panelScroll = findViewById<View>(R.id.panelScroll)
         findViewById<Button>(R.id.btnSettings).setOnClickListener {
             panelScroll.visibility = if (panelScroll.visibility == View.VISIBLE) View.GONE else View.VISIBLE
@@ -251,11 +284,124 @@ class MainActivity : AppCompatActivity() {
                 .setCaptureRequestOption(CaptureRequest.SENSOR_FRAME_DURATION, max(exp, 33_333_333L))
                 .build()
             c2.setCaptureRequestOptions(opts)
+            setReciprocity(if (isBulb()) 0f else shutterNs[shutterIndex] / 1e9f)
         } else {
             c2.clearCaptureRequestOptions()
             applyEvComp()
+            setReciprocity(0f)
         }
         updateExposureUi()
+    }
+
+    /**
+     * Efekt Schwarzschilda: przy naświetlaniu dłuższym niż ok. 1/2 s stara emulsja "gubi" światło
+     * (p ≈ 0.8) i robi się bardziej kontrastowa.
+     */
+    private fun setReciprocity(seconds: Float) {
+        val tc = 0.5f
+        if (seconds <= tc) {
+            params.reciprocityStops = 0f
+            params.reciprocityContrast = 1f
+            return
+        }
+        val p = if (params.stock.spectral[0] < 0.1f) 0.75f else 0.8f
+        val loss = ((1f - p) * ln(seconds / tc.toDouble()) / ln(2.0)).toFloat()
+        params.reciprocityStops = -loss
+        params.reciprocityContrast = 1f + 0.12f * loss
+    }
+
+    private fun isBulb(): Boolean = manualMode && manualSupported && shutterIndex == bulbIndex
+
+    private fun startBulb() {
+        if (bulbActive || !btnTake.isEnabled) return
+        analysisExecutor.execute {
+            accum = null
+            bulbFinishRequested = false
+            bulbStartNs = System.nanoTime()
+            bulbActive = true
+        }
+        btnTake.alpha = 0.5f
+    }
+
+    private fun stopBulb() {
+        btnTake.alpha = 1f
+        if (!btnTake.isEnabled) return
+        btnTake.isEnabled = false
+        analysisExecutor.execute {
+            if (!bulbActive) {
+                runOnUiThread { btnTake.isEnabled = true }
+                return@execute
+            }
+            bulbActive = false
+            val bytes = bulbBytes
+            val w = bulbW
+            val h = bulbH
+            val rot = bulbRot
+            val seconds = bulbSeconds
+            if (accum == null || bytes == null) {
+                runOnUiThread { btnTake.isEnabled = true }
+                return@execute
+            }
+            accum = null
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            bmp.copyPixelsFromBuffer(ByteBuffer.wrap(bytes))
+            flashView.post {
+                flashView.alpha = 0.7f
+                flashView.animate().alpha(0f).setDuration(350).start()
+            }
+            ioExecutor.execute {
+                setReciprocity(seconds)
+                developBitmap(bmp, rot, BULB_HEADROOM, afterDevelop = { setReciprocity(0f) })
+            }
+        }
+    }
+
+    /** Dodaje światło bieżącej klatki do sumy i podmienia klatkę podglądu na sumę (zakodowaną z zapasem). */
+    private fun accumulateBulb(dst: ByteBuffer, w: Int, h: Int, rot: Int) {
+        val n = w * h * 4
+        var fb = frameBytes
+        if (fb == null || fb.size != n) {
+            fb = ByteArray(n)
+            frameBytes = fb
+        }
+        dst.position(0)
+        dst.get(fb)
+        var acc = accum
+        if (acc == null || bulbW != w || bulbH != h) {
+            acc = FloatArray(w * h * 3)
+            accum = acc
+            bulbW = w
+            bulbH = h
+            bulbStartNs = System.nanoTime()
+        }
+        bulbRot = rot
+        var out = bulbBytes
+        if (out == null || out.size != n) {
+            out = ByteArray(n)
+            bulbBytes = out
+        }
+        val scale = 4095f / HEADROOM_LINEAR
+        var j = 0
+        var i = 0
+        while (i < n) {
+            val r = acc[j] + linLut[fb[i].toInt() and 0xFF]
+            val g = acc[j + 1] + linLut[fb[i + 1].toInt() and 0xFF]
+            val b = acc[j + 2] + linLut[fb[i + 2].toInt() and 0xFF]
+            acc[j] = r
+            acc[j + 1] = g
+            acc[j + 2] = b
+            out[i] = encLut[min((r * scale).toInt(), 4095)]
+            out[i + 1] = encLut[min((g * scale).toInt(), 4095)]
+            out[i + 2] = encLut[min((b * scale).toInt(), 4095)]
+            out[i + 3] = 0xFF.toByte()
+            i += 4
+            j += 3
+        }
+        dst.position(0)
+        dst.put(out)
+        dst.position(0)
+        bulbSeconds = (System.nanoTime() - bulbStartNs) / 1e9f
+        setReciprocity(bulbSeconds)
     }
 
     private fun applyEvComp() {
@@ -335,6 +481,8 @@ class MainActivity : AppCompatActivity() {
             val rot = image.imageInfo.rotationDegrees
 
             meterEv = measure(dst, w, h)
+            val bulbNow = bulbActive
+            if (bulbNow) accumulateBulb(dst, w, h, rot)
 
             if (params.aiEnabled && segmenting.compareAndSet(false, true)) {
                 val small = smallUpright(dst, w, h, rot)
@@ -349,7 +497,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            renderer.commitFrame(w, h, rot)
+            renderer.commitFrame(w, h, rot, if (bulbNow) BULB_HEADROOM else 0f)
             glView.requestRender()
 
             frameCount++
@@ -392,13 +540,18 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateMeterUi() {
         val ev = meterEv
-        meterText.text = if (manualMode) {
+        meterText.text = if (bulbActive) {
+            "B: %.1f s  ·  Schwarzschild %.1f EV  ·  puść, by zakończyć".format(bulbSeconds, params.reciprocityStops)
+        } else if (isBulb()) {
+            "Tryb B: trzymaj spust tak długo, jak ma trwać naświetlanie"
+        } else if (manualMode) {
             val arrow = when {
                 ev > 0.7f -> "▲ prześwietlone – krótszy czas"
                 ev < -0.7f -> "▼ niedoświetlone – dłuższy czas"
                 else -> "● w punkt"
             }
-            "Światłomierz: %+.1f EV   %s".format(ev, arrow)
+            val rec = if (params.reciprocityStops < -0.05f) "  ·  Schwarzschild %.1f EV".format(params.reciprocityStops) else ""
+            "Światłomierz: %+.1f EV   %s%s".format(ev, arrow, rec)
         } else {
             "Automat dobiera światło · w trybie KLISZA naświetlasz sam"
         }
@@ -481,7 +634,17 @@ class MainActivity : AppCompatActivity() {
             }
             val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
                 ?: throw IllegalStateException("Nie można odczytać zdjęcia")
+            developBitmap(bmp, rot, 0f)
+        } catch (e: Throwable) {
+            runOnUiThread {
+                btnTake.isEnabled = true
+                toast("Nie udało się wywołać zdjęcia: ${e.message}")
+            }
+        }
+    }
 
+    private fun developBitmap(bmp: Bitmap, rot: Int, inputGain: Float, afterDevelop: (() -> Unit)? = null) {
+        try {
             var maskBuf: ByteBuffer? = null
             var mw = 0
             var mh = 0
@@ -501,11 +664,12 @@ class MainActivity : AppCompatActivity() {
             val mb = maskBuf
             glView.queueEvent {
                 val out = try {
-                    renderer.renderStill(bmp, rot, mb, mw, mh)
+                    renderer.renderStill(bmp, rot, mb, mw, mh, inputGain)
                 } catch (e: Throwable) {
                     null
                 }
                 bmp.recycle()
+                afterDevelop?.invoke()
                 ioExecutor.execute { finishSave(out) }
             }
         } catch (e: Throwable) {
@@ -550,10 +714,35 @@ class MainActivity : AppCompatActivity() {
     // ---------------------------------------------------------------- panel ustawień
 
     private fun buildPanel(panel: LinearLayout) {
-        addSlider(panel, "Kontrast kliszy", 0.5f, 2.0f, 1f, { "×%.2f".format(it) }) { params.contrastMul = it }
+        panel.addView(header("CIEMNIA"))
+        addSlider(panel, "Gradacja papieru", 0f, 5f, 2f, { "%d (%s)".format(it.roundToInt(), paperName(it.roundToInt())) }, steps = 5) {
+            params.paperGrade = it.roundToInt()
+        }
+        addSlider(panel, "Efekt krawędziowy wywoływacza", 0f, 1f, 0.35f, { "%d%%".format((it * 100).roundToInt()) }) { params.edge = it }
+        addSlider(panel, "Przeterminowana klisza", 0f, 1f, 0f, { "%d%%".format((it * 100).roundToInt()) }) { params.expired = it }
+        panel.addView(header("KLISZA"))
         addSlider(panel, "Ziarno", 0f, 3f, 1f, { "×%.2f".format(it) }) { params.grainMul = it }
         addSlider(panel, "Poświata świateł (halacja)", 0f, 3f, 1f, { "×%.2f".format(it) }) { params.glowMul = it }
+        panel.addView(header("OBIEKTYW"))
         addSlider(panel, "Winieta obiektywu", 0f, 2f, 1f, { "×%.2f".format(it) }) { params.vignetteMul = it }
+        addSlider(panel, "Filtr dyfuzyjny (pończocha)", 0f, 1f, 0f, { "%d%%".format((it * 100).roundToInt()) }) { params.diffusion = it }
+        addSlider(panel, "Przysłona (głębia ostrości, AI)", 0f, 7f, 7f, { "f/" + F_STOPS[it.roundToInt()] }, steps = 7) {
+            params.aperture = apertureBlur(F_STOPS_VAL[it.roundToInt()])
+        }
+        addSlider(panel, "Ostrość", 0f, 1f, 0f, {
+            when {
+                it < 0.2f -> "na postaci"
+                it > 0.8f -> "na tle"
+                else -> "pomiędzy"
+            }
+        }) { params.focus = it }
+        panel.addView(CheckBox(this).apply {
+            text = "Wirujące rozmycie (jak Helios)"
+            setTextColor(Color.WHITE)
+            isChecked = params.swirl
+            setOnCheckedChangeListener { _, c -> params.swirl = c }
+        })
+        panel.addView(header("APARAT"))
         addSlider(panel, "Korekta ekspozycji aparatu (AUTO)", -3f, 2f, 0f, { "%+.1f EV".format(it) }) {
             evComp = it
             if (!manualMode) applyEvComp()
@@ -582,17 +771,17 @@ class MainActivity : AppCompatActivity() {
 
     private fun addSlider(
         panel: LinearLayout, title: String, lo: Float, hi: Float, initial: Float,
-        fmt: (Float) -> String, onChange: (Float) -> Unit
+        fmt: (Float) -> String, steps: Int = 1000, onChange: (Float) -> Unit
     ) {
         val label = TextView(this).apply {
             setTextColor(Color.WHITE)
             textSize = 13f
         }
         val seek = SeekBar(this)
-        seek.max = 1000
-        seek.progress = ((initial - lo) / (hi - lo) * 1000f).roundToInt()
+        seek.max = steps
+        seek.progress = ((initial - lo) / (hi - lo) * steps).roundToInt()
         fun update(p: Int, notify: Boolean) {
-            val v = lo + (hi - lo) * p / 1000f
+            val v = lo + (hi - lo) * p / steps.toFloat()
             label.text = "$title: ${fmt(v)}"
             if (notify) onChange(v)
         }
@@ -607,6 +796,25 @@ class MainActivity : AppCompatActivity() {
         panel.addView(label)
         panel.addView(seek)
     }
+
+    private fun header(t: String) = TextView(this).apply {
+        text = t
+        setTextColor(Color.parseColor("#AAAAAA"))
+        textSize = 12f
+        setPadding(0, 28, 0, 6)
+    }
+
+    private fun paperName(g: Int) = when (g) {
+        0 -> "bardzo miękki"
+        1 -> "miękki"
+        2 -> "normalny"
+        3 -> "twardy"
+        4 -> "bardzo twardy"
+        else -> "ekstra twardy"
+    }
+
+    /** Rozmycie jest proporcjonalne do 1/N: f/16 → 0, f/1.4 → 1. */
+    private fun apertureBlur(f: Float): Float = ((1f / f - 1f / 16f) / (1f / 1.4f - 1f / 16f)).coerceIn(0f, 1f)
 
     private fun toast(msg: String) {
         Toast.makeText(this, msg, Toast.LENGTH_LONG).show()

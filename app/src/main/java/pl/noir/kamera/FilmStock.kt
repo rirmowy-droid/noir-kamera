@@ -66,4 +66,26 @@ class LookParams {
     @Volatile var aiEnabled = true
     @Volatile var aiAmount = 0.7f
     @Volatile var damage = false
+
+    // ciemnia
+    @Volatile var paperGrade = 2            // 0 (miękki) … 5 (bardzo twardy)
+    @Volatile var edge = 0.35f              // efekt krawędziowy wywoływacza
+    @Volatile var expired = 0f              // 0 = świeża klisza, 1 = mocno przeterminowana
+    val expiredSeed = (Math.random() * 100.0).toFloat()
+
+    // obiektyw
+    @Volatile var diffusion = 0f            // filtr dyfuzyjny
+    @Volatile var aperture = 0f             // 0 = f/16 (wszystko ostre) … 1 = f/1.4
+    @Volatile var focus = 0f                // 0 = ostrość na postaci, 1 = na tle
+    @Volatile var swirl = false             // wirujące rozmycie (Helios)
+
+    // fizyka naświetlania (ustawiane przez aparat)
+    @Volatile var reciprocityStops = 0f     // utrata czułości przy długich czasach (≤ 0)
+    @Volatile var reciprocityContrast = 1f
+
+    fun paperContrast(): Float = PAPER_GRADES[paperGrade.coerceIn(0, 5)]
+
+    companion object {
+        val PAPER_GRADES = floatArrayOf(0.65f, 0.82f, 1.0f, 1.18f, 1.38f, 1.62f)
+    }
 }

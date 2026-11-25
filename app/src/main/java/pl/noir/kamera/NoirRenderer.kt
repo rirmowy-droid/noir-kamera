@@ -36,11 +36,13 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
     private var readyW = 0
     private var readyH = 0
     private var readyRot = 0
+    private var readyGain = 0f
     private var newFrame = false
 
     private var frameW = 0
     private var frameH = 0
     private var frameRot = 0
+    private var frameGain = 0f
     private var texW = 0
     private var texH = 0
     private var hasFrame = false
@@ -77,7 +79,7 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
     }
 
     /** Wywoływane tylko z wątku analizy, po wypełnieniu frameBuffer(). */
-    fun commitFrame(w: Int, h: Int, rotation: Int) {
+    fun commitFrame(w: Int, h: Int, rotation: Int, inputGain: Float = 0f) {
         synchronized(lock) {
             val t = readyBuf
             readyBuf = writeBuf
@@ -85,6 +87,7 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
             readyW = w
             readyH = h
             readyRot = rotation
+            readyGain = inputGain
             newFrame = true
         }
     }
@@ -106,7 +109,8 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
         val names = listOf(
             "uFrame", "uMask", "uRotation", "uFit", "uSpectral", "uExposure", "uContrast", "uToe",
             "uGrain", "uGrainSize", "uGlow", "uBloomLod", "uVignette", "uMaskAmount", "uDamage",
-            "uTime", "uAspect", "uTint", "uFlip"
+            "uTime", "uAspect", "uTint", "uFlip", "uInputGain", "uDepthOn", "uFocus", "uAperture",
+            "uSwirl", "uEdge", "uDiffusion", "uExpired", "uSeed"
         )
         uniforms.clear()
         for (n in names) uniforms[n] = GLES30.glGetUniformLocation(program, n)
@@ -148,6 +152,7 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
                 frameW = readyW
                 frameH = readyH
                 frameRot = readyRot
+                frameGain = readyGain
                 newFrame = false
                 upload = glBuf
             }
@@ -200,14 +205,14 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
             fitX = asr / af; fitY = 1f
         }
         val time = (System.nanoTime() - startNs) / 1e9f
-        draw(frameTex, upW, upH, frameRot, fitX, fitY, false, time, if (maskValid && params.aiEnabled) maskTex else whiteTex)
+        draw(frameTex, upW, upH, frameRot, fitX, fitY, false, time, if (maskValid && params.aiEnabled) maskTex else whiteTex, frameGain)
     }
 
     /**
      * Wywołanie pełnej rozdzielczości zdjęcia tym samym "chemicznym" procesem co podgląd.
      * Musi być wywołane na wątku GL (glView.queueEvent).
      */
-    fun renderStill(bitmap: Bitmap, rotation: Int, mask: ByteBuffer?, mw: Int, mh: Int): Bitmap {
+    fun renderStill(bitmap: Bitmap, rotation: Int, mask: ByteBuffer?, mw: Int, mh: Int, inputGain: Float = 0f): Bitmap {
         val bw = bitmap.width
         val bh = bitmap.height
         val upW = if (rotation % 180 != 0) bh else bw
@@ -243,7 +248,7 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
             if (status != GLES30.GL_FRAMEBUFFER_COMPLETE) throw IllegalStateException("FBO $status")
             GLES30.glViewport(0, 0, upW, upH)
             val seed = (System.nanoTime() % 100000L) / 37.0f
-            draw(src, upW, upH, rotation, 1f, 1f, true, seed, stillMask)
+            draw(src, upW, upH, rotation, 1f, 1f, true, seed, stillMask, inputGain)
             GLES30.glPixelStorei(GLES30.GL_PACK_ALIGNMENT, 1)
             GLES30.glReadPixels(0, 0, upW, upH, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, out)
         } finally {
@@ -262,7 +267,7 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
 
     private fun draw(
         tex: Int, upW: Int, upH: Int, rotation: Int,
-        fitX: Float, fitY: Float, flip: Boolean, time: Float, mask: Int
+        fitX: Float, fitY: Float, flip: Boolean, time: Float, mask: Int, inputGain: Float
     ) {
         val s = params.stock
         GLES30.glUseProgram(program)
@@ -280,8 +285,12 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
         GLES30.glUniform1i(u("uRotation"), (rotation / 90) % 4)
         GLES30.glUniform2f(u("uFit"), fitX, fitY)
         GLES30.glUniform3f(u("uSpectral"), s.spectral[0], s.spectral[1], s.spectral[2])
-        GLES30.glUniform1f(u("uExposure"), params.pushPull)
-        GLES30.glUniform1f(u("uContrast"), s.contrast * params.contrastMul)
+        GLES30.glUniform1f(u("uExposure"), params.pushPull + params.reciprocityStops)
+        GLES30.glUniform1f(u("uInputGain"), inputGain)
+        GLES30.glUniform1f(
+            u("uContrast"),
+            s.contrast * params.contrastMul * params.paperContrast() * params.reciprocityContrast
+        )
         GLES30.glUniform1f(u("uToe"), s.toe)
         GLES30.glUniform1f(u("uGrain"), s.grain * params.grainMul)
         GLES30.glUniform1f(u("uGrainSize"), s.grainSize)
@@ -294,6 +303,15 @@ class NoirRenderer(private val params: LookParams) : GLSurfaceView.Renderer {
         GLES30.glUniform1f(u("uAspect"), upW.toFloat() / upH)
         GLES30.glUniform3f(u("uTint"), s.tint[0], s.tint[1], s.tint[2])
         GLES30.glUniform1f(u("uFlip"), if (flip) 1f else 0f)
+        val depthOn = params.aiEnabled && mask != whiteTex
+        GLES30.glUniform1f(u("uDepthOn"), if (depthOn) 1f else 0f)
+        GLES30.glUniform1f(u("uFocus"), params.focus)
+        GLES30.glUniform1f(u("uAperture"), if (depthOn) params.aperture else 0f)
+        GLES30.glUniform1f(u("uSwirl"), if (params.swirl) 1f else 0f)
+        GLES30.glUniform1f(u("uEdge"), params.edge)
+        GLES30.glUniform1f(u("uDiffusion"), params.diffusion)
+        GLES30.glUniform1f(u("uExpired"), params.expired)
+        GLES30.glUniform1f(u("uSeed"), params.expiredSeed)
 
         quad.position(0)
         GLES30.glVertexAttribPointer(0, 2, GLES30.GL_FLOAT, false, 16, quad)

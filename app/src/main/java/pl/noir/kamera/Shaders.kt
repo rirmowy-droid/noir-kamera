@@ -14,9 +14,10 @@ void main() {
 """
 
     /**
-     * Emulacja czarno-białej kliszy:
-     * światło (liniowe) -> czułość widmowa -> poświata/halacja -> maska AI -> winieta
-     * -> krzywa charakterystyczna w skali logarytmicznej (jak H&D) -> ziarno zależne od gęstości -> uszkodzenia taśmy.
+     * Droga światła, jak w prawdziwym aparacie i ciemni:
+     * OBIEKTYW  – głębia ostrości (mapa AI), wirujące rozmycie, dyfuzja, miękkość, winieta
+     * KLISZA    – czułość widmowa, halacja, przeterminowanie, krzywa charakterystyczna, ziarno
+     * CIEMNIA   – efekt krawędziowy wywoływacza, gradacja papieru (kontrast), ton odbitki
      */
     const val FRAGMENT = """#version 300 es
 precision highp float;
@@ -29,6 +30,7 @@ uniform int uRotation;
 uniform vec2 uFit;
 uniform vec3 uSpectral;
 uniform float uExposure;
+uniform float uInputGain;
 uniform float uContrast;
 uniform float uToe;
 uniform float uGrain;
@@ -37,6 +39,14 @@ uniform float uGlow;
 uniform float uBloomLod;
 uniform float uVignette;
 uniform float uMaskAmount;
+uniform float uDepthOn;
+uniform float uFocus;
+uniform float uAperture;
+uniform float uSwirl;
+uniform float uEdge;
+uniform float uDiffusion;
+uniform float uExpired;
+uniform float uSeed;
 uniform float uDamage;
 uniform float uTime;
 uniform float uAspect;
@@ -74,6 +84,35 @@ float expo(vec2 uv, float lod) {
     return lum(textureLod(uFrame, toTex(clamp(uv, 0.0, 1.0)), lod).rgb);
 }
 
+float subjectAt(vec2 uv) {
+    return smoothstep(0.25, 0.75, texture(uMask, uv).r);
+}
+
+// głębia ostrości: AI mówi, co jest postacią (blisko), a co tłem (daleko)
+float optical(vec2 uv, out float coc) {
+    float depth = uDepthOn > 0.5 ? 1.0 - subjectAt(uv) : uFocus;
+    coc = clamp(abs(depth - uFocus) * uAperture, 0.0, 1.0);
+    if (coc < 0.02) return lum(texture(uFrame, toTex(uv)).rgb);
+    float lod = coc * max(uBloomLod - 1.0, 1.0);
+    float rad = coc * 0.022;
+    vec2 d = uv - 0.5;
+    vec2 o1;
+    vec2 o2;
+    if (uSwirl > 0.5) {
+        // Helios: rozmycie układa się w okręgi wokół środka kadru
+        vec2 dA = d * vec2(uAspect, 1.0);
+        vec2 t = vec2(-dA.y, dA.x) / vec2(uAspect, 1.0);
+        o1 = t * rad * 5.0;
+        o2 = d * rad * 0.8;
+    } else {
+        o1 = vec2(rad / uAspect, 0.0);
+        o2 = vec2(0.0, rad);
+    }
+    return expo(uv, lod) * 0.36
+        + (expo(uv + o1, lod) + expo(uv - o1, lod)) * 0.2
+        + (expo(uv + o2, lod) + expo(uv - o2, lod)) * 0.12;
+}
+
 void main() {
     vec2 uv = 0.5 + (vUv - 0.5) * uFit;
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
@@ -81,12 +120,23 @@ void main() {
         return;
     }
 
-    float gain = exp2(uExposure);
-    float e = lum(texture(uFrame, toTex(uv)).rgb);
+    float gain = exp2(uExposure + uInputGain);
+    float coc;
+    float e = optical(uv, coc);
 
-    // miękkość starego obiektywu: światła lekko "rozlewają się"
+    // efekt krawędziowy wywoływacza: granice jasne/ciemne nabierają "ostrości" starej odbitki
+    if (uEdge > 0.001) {
+        float local = expo(uv, max(uBloomLod - 2.5, 0.0));
+        float ratio = clamp((e + 1e-4) / (local + 1e-4), 0.25, 4.0);
+        e *= pow(ratio, uEdge * 0.7 * (1.0 - coc));
+    }
+
+    // miękkość starego obiektywu i filtr dyfuzyjny ("pończocha")
     float soft = expo(uv, max(uBloomLod - 3.0, 0.0));
     e = mix(e, max(e, soft), 0.35 * uGlow);
+    float wide = expo(uv, max(uBloomLod - 1.0, 0.0));
+    e = mix(e, soft, uDiffusion * 0.3);
+    e += max(wide - e, 0.0) * uDiffusion * 0.6;
 
     // halacja: szeroka poświata wokół jasnych źródeł
     vec2 r = vec2(0.018 / uAspect, 0.018);
@@ -96,8 +146,14 @@ void main() {
     float bright = max(g * gain - 0.6, 0.0);
     e = e * gain + bright * uGlow * 0.8;
 
+    // przeterminowana klisza: nierówna czułość emulsji
+    if (uExpired > 0.001) {
+        float uneven = vnoise(uv * vec2(uAspect, 1.0) * 2.5 + uSeed) - 0.5;
+        e *= exp2(uneven * 1.2 * uExpired);
+    }
+
     // AI: postać zostaje w świetle, tło zapada się w ciemność
-    float m = smoothstep(0.25, 0.75, texture(uMask, uv).r);
+    float m = subjectAt(uv);
     e *= mix(1.0 - 0.93 * uMaskAmount, 1.0, m);
 
     // naturalna winieta obiektywu
@@ -111,16 +167,20 @@ void main() {
         e *= 1.0 + (hash(vec2(frameNo, 7.0)) - 0.5) * 0.14;
     }
 
-    // krzywa charakterystyczna kliszy (stopa - prosta - ramię) w skali log ekspozycji
+    // krzywa charakterystyczna (stopa - prosta - ramię) × gradacja papieru
+    float contrast = uContrast * (1.0 - 0.35 * uExpired);
     float x = log2(max(e, 1e-5) / 0.18);
-    float y = 1.0 / (1.0 + exp(-uContrast * x * 0.9));
+    float y = 1.0 / (1.0 + exp(-contrast * x * 0.9));
     y = clamp((y - uToe) / (0.985 - uToe), 0.0, 1.0);
+
+    // zadymienie przeterminowanej kliszy: szare czernie, przygaszone biele
+    y = mix(y, 0.45, 0.28 * uExpired);
 
     // ziarno: najsilniejsze w półtonach, każde zdjęcie/klatka ma inny układ
     vec2 gp = vec2(uv.x * uAspect, uv.y) * uGrainSize;
     vec2 seed = vec2(hash(vec2(uTime, 1.3)), hash(vec2(uTime, 9.1))) * 512.0;
     float n = vnoise(gp + seed) * 0.65 + vnoise(gp * 2.3 + seed.yx) * 0.35 - 0.5;
-    float amp = uGrain * (0.45 + 2.2 * y * (1.0 - y));
+    float amp = uGrain * (0.45 + 2.2 * y * (1.0 - y)) * (1.0 + 0.8 * uExpired);
     y = clamp(y + n * amp * 2.0, 0.0, 1.0);
 
     // rysy i kurz na taśmie

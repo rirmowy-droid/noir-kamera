@@ -7,6 +7,10 @@ To nie jest filtr nakładany na gotowe zdjęcie. Aplikacja:
 - **naprawdę naświetla matrycę jak stary aparat** (tryb **KLISZA**): czułość bierze się z wybranej kliszy (ISO 25, 100, 800…), a czas migawki ustawiasz sam (od 1/1000 do 1 s). Automatyka jest wyłączona. Przy długich czasach poruszone ujęcia są prawdziwe, nie symulowane. Światłomierz u góry pokazuje, czy kadr jest dobrze naświetlony;
 - **przelicza światło tak jak emulsja**: każda klisza ma własną czułość na kolory (ortochromatyczna z 1927 r. prawie nie widzi czerwieni, a filtr czerwony z lat 40. robi czarne niebo), własną krzywą charakterystyczną (stopa → prosta → ramię), halację wokół świateł i ziarno zależne od gęstości;
 - **używa AI** (ML Kit, działa w telefonie, bez internetu), żeby oddzielić postać od tła. Tło zapada się w ciemność jak w film noir, a twarz zostaje w świetle;
+- **ma tryb B (Bulb)**: migawka otwarta, dopóki trzymasz spust. Aplikacja sumuje światło kolejnych klatek, więc nocą świecące punkty zostawiają smugi;
+- **symuluje efekt Schwarzschilda**: przy naświetlaniu dłuższym niż 1/2 s stara emulsja traci czułość i rośnie kontrast, dokładnie jak prawdziwa klisza;
+- **ma ciemnię**: gradację papieru 0–5, efekt krawędziowy wywoływacza i przeterminowaną kliszę (zadymienie, nierówna czułość);
+- **ma obiektyw**: filtr dyfuzyjny („pończocha” z hollywoodzkich portretów), głębię ostrości z przysłoną f/1.4–f/16 i ręczną ostrość opartą na AI oraz wirujące rozmycie jak w Heliosie;
 - **pokazuje wszystko na żywo** w podglądzie, a zdjęcie „wywołuje” w pełnej rozdzielczości tym samym procesem.
 
 ## Instalacja na telefonie
